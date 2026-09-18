@@ -15,11 +15,11 @@ from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
 from ml.auto_train import TrainingManager
 
-VERSION="0.10.1"
+VERSION="0.11.0"
 agent=MarketAgent()
 shadow=ShadowService()
 coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
-trainer=TrainingManager(shadow,version="v0.10")
+trainer=TrainingManager(shadow,version="v0.11")
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
@@ -43,7 +43,7 @@ def bridge_configured():
     token=os.getenv("BRIDGE_TOKEN","")
     return bool(token and token!="change-me")
 
-def model_available(symbol,version="v0.10"):
+def model_available(symbol,version="v0.11"):
     return Path("artifacts/models")/symbol.upper()/version/"model.joblib"
 
 @app.get("/health")
@@ -70,6 +70,19 @@ def history_status():
 def training_status():
     return trainer.status()
 
+@app.get("/api/model/quality")
+def model_quality():
+    return {
+        symbol:{
+            "status":trainer.status().get(symbol,{}).get("status"),
+            "version":trainer.status().get(symbol,{}).get("version"),
+            "quality":trainer.status().get(symbol,{}).get("quality"),
+            "feature_importance":((trainer.status().get(symbol,{}).get("metrics") or {}).get("feature_importance")),
+            "learned_filters":((trainer.status().get(symbol,{}).get("metrics") or {}).get("learned_filters")),
+        }
+        for symbol in ("XAUUSD","BTCUSD")
+    }
+
 @app.post("/api/training/btc/retrain")
 async def retrain_btc():
     await trainer.start_btc(force=True)
@@ -77,7 +90,7 @@ async def retrain_btc():
 
 @app.post("/api/training/xau/start")
 async def train_xau():
-    await trainer.start_xau(force=False)
+    await trainer.start_xau(force=True)
     return {"accepted":True,"status":trainer.status()["XAUUSD"]["status"],"history":market_history_status("XAUUSD")}
 
 @app.post("/api/coinbase/btc/sync")
@@ -93,10 +106,13 @@ def live_status():
     model_status={}
     for symbol in ("XAUUSD","BTCUSD"):
         path=model_available(symbol)
+        quality=trainer.status().get(symbol,{}).get("quality") or {}
+        passed=bool(quality.get("passed",False))
         model_status[symbol]={
             "available":path.exists(),
-            "version":"v0.10" if path.exists() else None,
-            "state":"READY" if path.exists() else "MODEL_NOT_AVAILABLE",
+            "version":"v0.11" if path.exists() else None,
+            "quality_passed":passed,
+            "state":("READY_QUALITY_PASSED" if passed else "READY_QUALITY_BLOCKED") if path.exists() else "MODEL_NOT_AVAILABLE",
         }
     recent=shadow.recent(1)
     return {
@@ -157,8 +173,15 @@ async def history_batch(payload:dict):
         stored=await asyncio.to_thread(upsert_market_candles,"XAUUSD",timeframe,candles)
     except Exception as exc:
         raise HTTPException(500,f"history persistence failed: {exc}")
-    await trainer.start_xau(force=False)
     return {"accepted":True,"stored":stored,"timeframe":timeframe,"history":market_history_status("XAUUSD")}
+
+@app.post("/api/history/complete",dependencies=[Depends(verify_bridge_token)])
+async def history_complete(payload:dict):
+    if str(payload.get("symbol","")).upper()!="XAUUSD":
+        raise HTTPException(422,"historical completion currently supports XAUUSD only")
+    history=market_history_status("XAUUSD")
+    await trainer.start_xau(force=True)
+    return {"accepted":True,"status":trainer.status()["XAUUSD"]["status"],"history":history}
 
 @app.post("/api/live/candle",dependencies=[Depends(verify_bridge_token)])
 def live_candle(payload:dict):
@@ -187,7 +210,7 @@ def dashboard():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI Market Intelligence V0.10.1</title>
+<title>AI Market Intelligence V0.11.0</title>
 <style>
 :root{--bg:#080d1b;--panel:#11192b;--panel2:#172137;--text:#eef3ff;--muted:#8fa0bd;--line:#26324c;--green:#49e59a;--amber:#ffcb66;--red:#ff7184;--blue:#68a7ff}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#070b16,#0a1020);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -269,7 +292,7 @@ a{color:#8bb8ff;text-decoration:none}
 <body>
 <div class="wrap">
   <div class="top">
-    <div><h1>AI Market Intelligence Agent V0.10.1</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
+    <div><h1>AI Market Intelligence Agent V0.11.0</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
     <div class="badge"><span class="dot"></span><span id="apiState">Checking API…</span></div>
   </div>
 
@@ -329,12 +352,12 @@ a{color:#8bb8ff;text-decoration:none}
         <div class="train-step" id="step2" data-num="3"><div class="train-flow"></div><div class="step-no">3</div><div class="step-name">TRAINING REGIME</div><div class="step-desc">Learning market regime clusters from training-only data.</div></div>
         <div class="train-step" id="step3" data-num="4"><div class="train-flow"></div><div class="step-no">4</div><div class="step-name">TRAINING ENSEMBLE</div><div class="step-desc">LightGBM + XGBoost probability ensemble.</div></div>
         <div class="train-step" id="step4" data-num="5"><div class="train-flow"></div><div class="step-no">5</div><div class="step-name">VALIDATING</div><div class="step-desc">Calibration, threshold sweep and held-out test.</div></div>
-        <div class="train-step" id="step5" data-num="6"><div class="train-flow"></div><div class="step-no">6</div><div class="step-name">READY v0.10</div><div class="step-desc">Validated artifact available for shadow inference.</div></div>
+        <div class="train-step" id="step5" data-num="6"><div class="train-flow"></div><div class="step-no">6</div><div class="step-name">READY v0.11</div><div class="step-desc">Validated artifact available for shadow inference.</div></div>
       </div>
 
       <div class="train-meta">
         <div class="meta-box"><div class="k">STATUS</div><div class="mv" id="trainStatus">IDLE</div></div>
-        <div class="meta-box"><div class="k">VERSION</div><div class="mv" id="trainVersion">v0.10</div></div>
+        <div class="meta-box"><div class="k">VERSION</div><div class="mv" id="trainVersion">v0.11</div></div>
         <div class="meta-box"><div class="k">DATASET ROWS</div><div class="mv" id="trainRows">0</div></div>
         <div class="meta-box"><div class="k">STARTED UTC</div><div class="mv" id="trainStarted">—</div></div>
         <div class="meta-box"><div class="k">FINISHED UTC</div><div class="mv" id="trainFinished">—</div></div>
@@ -453,7 +476,7 @@ a{color:#8bb8ff;text-decoration:none}
       <div class="small" style="margin-top:11px">API docs: <a href="/docs">/docs</a> · Live status: <a href="/api/live/status">/api/live/status</a> · Training status: <a href="/api/training/status">/api/training/status</a></div>
     </div>
   </div>
-  <div class="footer">V0.10.1 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
+  <div class="footer">V0.11.0 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -486,7 +509,7 @@ function drawTrainingState(status, meta={}, visualOnly=false){
   $("trainStatus").textContent=status.replaceAll("_"," ");
   $("readyBurst").classList.toggle("show",status==="READY");
   if(!visualOnly){
-    $("trainVersion").textContent=meta.version||"v0.10";
+    $("trainVersion").textContent=meta.version||"v0.11";
     $("trainRows").textContent=(meta.dataset_rows||0).toLocaleString();
     $("trainStarted").textContent=fmtTime(meta.started_at);
     $("trainFinished").textContent=fmtTime(meta.finished_at);
@@ -551,7 +574,8 @@ function paintSymbol(prefix,s,waiting){
   $(prefix+"Ready").className=s.ready?"small ok":"small";
 }
 function modelText(el,m){
-  if(m?.available){el.textContent="READY "+(m.version||"");el.className="v ok"}
+  if(m?.available && m?.quality_passed){el.textContent="READY "+(m.version||"")+" · QUALITY PASSED";el.className="v ok"}
+  else if(m?.available){el.textContent=(m.version||"")+" · QUALITY BLOCKED";el.className="v warn"}
   else{el.textContent="MODEL NOT AVAILABLE";el.className="v warn"}
 }
 async function refresh(){
