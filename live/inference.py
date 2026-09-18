@@ -6,7 +6,8 @@ from data.multitimeframe import attach_htf_context
 from smc.engine import add_smc_features
 from live.model_loader import LiveModelLoader
 from live.shadow import ShadowJournal
-from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance\nfrom ml.quality import threshold_for_context
+from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance
+from ml.quality import threshold_for_context
 
 
 class LiveInference:
