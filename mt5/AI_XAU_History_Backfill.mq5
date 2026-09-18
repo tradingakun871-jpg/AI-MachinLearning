@@ -1,5 +1,5 @@
 #property strict
-#property version   "0.10"
+#property version   "1.000"
 #property script_show_inputs
 #property description "One-time XAUUSD historical backfill to AI Market Intelligence. Sends closed M3/M5/M15 candles only."
 
