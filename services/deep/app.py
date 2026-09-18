@@ -1,3 +1,4 @@
+import hmac
 import math
 import os
 import threading
@@ -8,19 +9,21 @@ import numpy as np
 import pandas as pd
 import torch
 import torch.nn as nn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 CHRONOS_MODEL = os.getenv("CHRONOS_MODEL", "autogluon/chronos-2-small")
-LOCAL_EPOCHS = int(os.getenv("LOCAL_DEEP_EPOCHS", "8"))
-MAX_WINDOWS = int(os.getenv("LOCAL_DEEP_MAX_WINDOWS", "384"))
+LOCAL_EPOCHS = int(os.getenv("LOCAL_DEEP_EPOCHS", "2"))
+MAX_WINDOWS = int(os.getenv("LOCAL_DEEP_MAX_WINDOWS", "96"))
+LOCAL_RETRAIN_BARS = int(os.getenv("LOCAL_DEEP_RETRAIN_BARS", "20"))
 DEVICE = "cpu"
 
-app = FastAPI(title="Deep Forecast Brain", version="1.0.0")
+app = FastAPI(title="Deep Forecast Brain", version="1.1.0")
 _chronos = None
 _chronos_lock = threading.Lock()
 _cache: dict[str, dict[str, Any]] = {}
 _cache_lock = threading.Lock()
+_training: set[str] = set()
 
 
 class ForecastRequest(BaseModel):
@@ -28,6 +31,15 @@ class ForecastRequest(BaseModel):
     timeframe: str = "M3"
     candles: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
     prediction_length: int = Field(default=10, ge=3, le=30)
+
+
+def require_internal(x_internal_token: str | None = Header(default=None)):
+    expected = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(503, "internal service token is not configured")
+    supplied = (x_internal_token or "").strip()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(401, "unauthorized")
 
 
 def load_db(symbol: str, timeframe: str, limit: int = 1200) -> list[dict[str, Any]]:
@@ -54,7 +66,7 @@ def load_db(symbol: str, timeframe: str, limit: int = 1200) -> list[dict[str, An
 
 def normalize_candles(candles: list[dict[str, Any]]) -> pd.DataFrame:
     rows = []
-    for i, c in enumerate(candles):
+    for c in candles:
         try:
             ts = pd.to_datetime(c.get("timestamp") or c.get("time"), utc=True)
             close = float(c["close"])
@@ -81,17 +93,16 @@ def normalize_candles(candles: list[dict[str, Any]]) -> pd.DataFrame:
 
 
 class PatchTSTMini(nn.Module):
-    def __init__(self, context: int, horizon: int, patch: int = 16, stride: int = 8, d_model: int = 64):
+    def __init__(self, context: int, horizon: int, patch: int = 16, stride: int = 8, d_model: int = 48):
         super().__init__()
         self.context, self.horizon, self.patch, self.stride = context, horizon, patch, stride
         self.proj = nn.Linear(patch, d_model)
-        layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4, dim_feedforward=128, dropout=0.1, batch_first=True)
-        self.encoder = nn.TransformerEncoder(layer, num_layers=2)
+        layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=4, dim_feedforward=96, dropout=0.1, batch_first=True)
+        self.encoder = nn.TransformerEncoder(layer, num_layers=1)
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, horizon)
 
     def forward(self, x):
-        # x: [B,T]
         p = x.unfold(1, self.patch, self.stride)
         z = self.proj(p)
         z = self.encoder(z)
@@ -100,7 +111,7 @@ class PatchTSTMini(nn.Module):
 
 
 class TemporalFusionTransformerMini(nn.Module):
-    def __init__(self, n_features: int, horizon: int, hidden: int = 48):
+    def __init__(self, n_features: int, horizon: int, hidden: int = 32):
         super().__init__()
         self.horizon = horizon
         self.embeds = nn.ModuleList([nn.Linear(1, hidden) for _ in range(n_features)])
@@ -112,7 +123,6 @@ class TemporalFusionTransformerMini(nn.Module):
         self.head = nn.Linear(hidden, horizon)
 
     def forward(self, x):
-        # x: [B,T,F], variable selection -> recurrent encoder -> temporal attention -> gated fusion
         weights = torch.softmax(self.selector(x), dim=-1)
         parts = [self.embeds[i](x[..., i:i+1]) * weights[..., i:i+1] for i in range(x.shape[-1])]
         z = torch.stack(parts, dim=0).sum(dim=0)
@@ -140,9 +150,8 @@ def make_windows(df: pd.DataFrame, context: int, horizon: int):
 
 def fit_local(df: pd.DataFrame, horizon: int):
     torch.manual_seed(42)
-    context = min(128, max(48, len(df) // 3))
+    context = min(96, max(48, len(df) // 4))
     x, y = make_windows(df, context, horizon)
-    # Standardize only return/vol channels with train-history statistics.
     ret_scale = float(df["ret"].std()) or 1e-5
     x = x.clone()
     x[..., 0] /= ret_scale
@@ -153,12 +162,12 @@ def fit_local(df: pd.DataFrame, horizon: int):
     tft = TemporalFusionTransformerMini(4, horizon).to(DEVICE)
     models = [("patchtst", patch, lambda a: a[..., 0]), ("tft", tft, lambda a: a)]
     losses = {}
-    batch = min(64, len(x))
+    batch = min(48, len(x))
     for name, model, select_x in models:
         opt = torch.optim.AdamW(model.parameters(), lr=1.5e-3, weight_decay=1e-4)
         model.train()
         last_loss = None
-        for _ in range(LOCAL_EPOCHS):
+        for _ in range(max(1, LOCAL_EPOCHS)):
             perm = torch.randperm(len(x))
             epoch_loss = 0.0
             steps = 0
@@ -185,6 +194,8 @@ def fit_local(df: pd.DataFrame, horizon: int):
         "context": context,
         "losses": losses,
         "trained_rows": len(df),
+        "trained_last_ts": str(df["timestamp"].iloc[-1]),
+        "trained_at": datetime.now(timezone.utc).isoformat(),
     }
 
 
@@ -201,17 +212,67 @@ def local_predict(bundle: dict[str, Any], df: pd.DataFrame, horizon: int):
     return patch, tft
 
 
-def get_local_bundle(symbol: str, timeframe: str, df: pd.DataFrame, horizon: int):
-    key = f"{symbol}:{timeframe}:{horizon}"
-    last_ts = str(df["timestamp"].iloc[-1])
+def _cache_key(symbol: str, timeframe: str, horizon: int) -> str:
+    return f"{symbol}:{timeframe}:{horizon}"
+
+
+def _bars_since(df: pd.DataFrame, trained_last_ts: str | None) -> int:
+    if not trained_last_ts:
+        return 10**9
+    try:
+        ts = pd.to_datetime(trained_last_ts, utc=True)
+        return int((df["timestamp"] > ts).sum())
+    except Exception:
+        return 10**9
+
+
+def get_cached_bundle(symbol: str, timeframe: str, df: pd.DataFrame, horizon: int):
+    key = _cache_key(symbol, timeframe, horizon)
     with _cache_lock:
         item = _cache.get(key)
-        if item and item.get("last_ts") == last_ts:
-            return item["bundle"], False
-    bundle = fit_local(df, horizon)
+        bundle = item.get("bundle") if item else None
+    if not bundle:
+        return None, "MISSING"
+    new_bars = _bars_since(df, bundle.get("trained_last_ts"))
+    return bundle, "FRESH" if new_bars < LOCAL_RETRAIN_BARS else "STALE"
+
+
+def _train_worker(key: str, df: pd.DataFrame, horizon: int):
+    try:
+        bundle = fit_local(df, horizon)
+        with _cache_lock:
+            _cache[key] = {"bundle": bundle, "status": "READY"}
+    except Exception as exc:
+        with _cache_lock:
+            _cache[key] = {"bundle": None, "status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}
+    finally:
+        with _cache_lock:
+            _training.discard(key)
+
+
+def schedule_local_training(symbol: str, timeframe: str, df: pd.DataFrame, horizon: int) -> bool:
+    key = _cache_key(symbol, timeframe, horizon)
     with _cache_lock:
-        _cache[key] = {"last_ts": last_ts, "bundle": bundle}
-    return bundle, True
+        if key in _training:
+            return False
+        _training.add(key)
+    thread = threading.Thread(target=_train_worker, args=(key, df.copy(), horizon), daemon=True, name=f"local-train-{key}")
+    thread.start()
+    return True
+
+
+def local_training_status(symbol: str, timeframe: str, horizon: int) -> dict[str, Any]:
+    key = _cache_key(symbol, timeframe, horizon)
+    with _cache_lock:
+        training = key in _training
+        item = _cache.get(key) or {}
+    bundle = item.get("bundle")
+    return {
+        "state": "TRAINING" if training else item.get("status", "NOT_TRAINED"),
+        "trained_rows": bundle.get("trained_rows") if bundle else None,
+        "trained_at": bundle.get("trained_at") if bundle else None,
+        "losses": bundle.get("losses") if bundle else None,
+    }
 
 
 def get_chronos():
@@ -263,24 +324,30 @@ def direction_info(paths: list[np.ndarray], ensemble: np.ndarray, hist_vol: floa
 
 @app.get("/health")
 def health():
+    with _cache_lock:
+        training_count = len(_training)
     return {
         "status": "ok",
         "service": "deep-forecast-brain",
+        "version": "1.1.0",
         "chronos_model": CHRONOS_MODEL,
         "chronos_loaded": _chronos is not None,
         "local_model_cache": len(_cache),
+        "local_training_jobs": training_count,
         "device": DEVICE,
     }
 
 
 @app.post("/warmup")
-def warmup():
+def warmup(x_internal_token: str | None = Header(default=None)):
+    require_internal(x_internal_token)
     get_chronos()
     return {"ok": True, "chronos_model": CHRONOS_MODEL, "loaded": True}
 
 
 @app.post("/forecast")
-def forecast(req: ForecastRequest):
+def forecast(req: ForecastRequest, x_internal_token: str | None = Header(default=None)):
+    require_internal(x_internal_token)
     symbol = req.symbol.upper()
     timeframe = req.timeframe.upper()
     candles = req.candles or load_db(symbol, timeframe)
@@ -289,16 +356,66 @@ def forecast(req: ForecastRequest):
     try:
         df = normalize_candles(candles)
         horizon = min(req.prediction_length, max(3, len(df) // 20))
-        bundle, retrained = get_local_bundle(symbol, timeframe, df, horizon)
-        patch, tft = local_predict(bundle, df, horizon)
+
+        # Fast path: Chronos inference is always synchronous.
         chronos, q10, q90 = chronos_predict(df, horizon)
+
+        # Local PatchTST/TFT are research models. Never block the live request for retraining.
+        bundle, freshness = get_cached_bundle(symbol, timeframe, df, horizon)
+        training_scheduled = False
+        if bundle is None or freshness == "STALE":
+            training_scheduled = schedule_local_training(symbol, timeframe, df, horizon)
+
+        patch = tft = None
+        if bundle is not None:
+            try:
+                patch, tft = local_predict(bundle, df, horizon)
+            except Exception:
+                patch = tft = None
     except Exception as exc:
         raise HTTPException(503, f"deep forecast failed: {type(exc).__name__}: {exc}")
 
-    ensemble = 0.50 * chronos + 0.25 * patch + 0.25 * tft
+    paths = [chronos]
+    weights = {"chronos2": 1.0, "patchtst": 0.0, "tft": 0.0}
+    ensemble = chronos.copy()
+    if patch is not None and tft is not None:
+        paths = [chronos, patch, tft]
+        weights = {"chronos2": 0.50, "patchtst": 0.25, "tft": 0.25}
+        ensemble = 0.50 * chronos + 0.25 * patch + 0.25 * tft
+
     last_price = float(df["close"].iloc[-1])
     hist_vol = float(df["ret"].tail(100).std()) or 1e-5
-    direction, confidence, agreement_up, z = direction_info([chronos, patch, tft], ensemble, hist_vol)
+    direction, confidence, agreement_up, z = direction_info(paths, ensemble, hist_vol)
+
+    models: dict[str, Any] = {
+        "chronos2": {
+            "model": CHRONOS_MODEL,
+            "status": "READY",
+            "forecast_returns": [round(float(x), 8) for x in chronos],
+            "forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, chronos)],
+            "q10_prices": [round(float(x), 6) for x in prices_from_returns(last_price, q10)],
+            "q90_prices": [round(float(x), 6) for x in prices_from_returns(last_price, q90)],
+        }
+    }
+    if patch is not None and tft is not None and bundle is not None:
+        models["patchtst"] = {
+            "model": "PatchTSTMini-trained-on-market-history",
+            "status": "READY",
+            "forecast_returns": [round(float(x), 8) for x in patch],
+            "forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, patch)],
+            "train_loss": bundle["losses"]["patchtst"],
+        }
+        models["tft"] = {
+            "model": "TemporalFusionTransformerMini-trained-on-market-history",
+            "status": "READY",
+            "forecast_returns": [round(float(x), 8) for x in tft],
+            "forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, tft)],
+            "train_loss": bundle["losses"]["tft"],
+        }
+    else:
+        state = local_training_status(symbol, timeframe, horizon)
+        models["patchtst"] = {"model": "PatchTSTMini-trained-on-market-history", "status": state["state"]}
+        models["tft"] = {"model": "TemporalFusionTransformerMini-trained-on-market-history", "status": state["state"]}
 
     return {
         "status": "READY",
@@ -310,32 +427,13 @@ def forecast(req: ForecastRequest):
         "direction_confidence": confidence,
         "agreement_up_fraction": agreement_up,
         "normalized_move_strength": z,
-        "ensemble_weights": {"chronos2": 0.50, "patchtst": 0.25, "tft": 0.25},
-        "models": {
-            "chronos2": {
-                "model": CHRONOS_MODEL,
-                "forecast_returns": [round(float(x), 8) for x in chronos],
-                "forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, chronos)],
-                "q10_prices": [round(float(x), 6) for x in prices_from_returns(last_price, q10)],
-                "q90_prices": [round(float(x), 6) for x in prices_from_returns(last_price, q90)],
-            },
-            "patchtst": {
-                "model": "PatchTSTMini-trained-on-market-history",
-                "forecast_returns": [round(float(x), 8) for x in patch],
-                "forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, patch)],
-                "train_loss": bundle["losses"]["patchtst"],
-            },
-            "tft": {
-                "model": "TemporalFusionTransformerMini-trained-on-market-history",
-                "forecast_returns": [round(float(x), 8) for x in tft],
-                "forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, tft)],
-                "train_loss": bundle["losses"]["tft"],
-            },
-        },
+        "ensemble_weights": weights,
+        "models": models,
         "ensemble_forecast_returns": [round(float(x), 8) for x in ensemble],
         "ensemble_forecast_prices": [round(float(x), 6) for x in prices_from_returns(last_price, ensemble)],
-        "local_models_retrained": retrained,
-        "training_rows": bundle["trained_rows"],
+        "local_model_freshness": freshness,
+        "local_training_scheduled": training_scheduled,
+        "local_training": local_training_status(symbol, timeframe, horizon),
         "captured_at": datetime.now(timezone.utc).isoformat(),
-        "quality_note": "Direction confidence is an ensemble-strength score, not a calibrated probability. Validate with walk-forward outcomes before live use.",
+        "quality_note": "Direction confidence is an ensemble-strength score, not a calibrated probability. PatchTST/TFT train asynchronously and only join the ensemble when cached models are ready.",
     }
