@@ -269,7 +269,15 @@ def apply_threshold_policy(frame,probability,policy):
     return take,thresholds
 
 
-def quality_gate_from_selection(test_frame,test_probability,selected_mask,applied_thresholds,rr,policy_status="CUSTOM",temporal_stability=None):
+def quality_gate_from_selection(
+    test_frame,
+    test_probability,
+    selected_mask,
+    applied_thresholds,
+    rr,
+    policy_status="CUSTOM",
+    temporal_stability=None,
+):
     y=np.asarray(test_frame["label"],dtype=int)
     p=np.asarray(test_probability,dtype=float)
     selected_mask=np.asarray(selected_mask,dtype=bool)
@@ -291,6 +299,11 @@ def quality_gate_from_selection(test_frame,test_probability,selected_mask,applie
     pf=trade.get("profit_factor")
     expectancy=float(trade.get("expectancy_r",-999) or -999)
     max_dd=float(trade.get("max_drawdown_r",0.0) or 0.0)
+
+    stability_passed=bool(
+        temporal_stability
+        and temporal_stability.get("passed",False)
+    )
 
     checks={
         "test_rows":{"passed":len(y)>=500,"value":int(len(y)),"minimum":500},
@@ -315,6 +328,10 @@ def quality_gate_from_selection(test_frame,test_probability,selected_mask,applie
             "passed":policy_status not in (None,"NONE"),
             "value":policy_status,
         },
+        "temporal_stability":{
+            "passed":stability_passed,
+            "value":None if not temporal_stability else temporal_stability.get("status"),
+        },
     }
 
     passed=all(item["passed"] for item in checks.values())
@@ -331,14 +348,20 @@ def quality_gate_from_selection(test_frame,test_probability,selected_mask,applie
         "base_rate":base_rate,
         "filtered_test_rows":trades,
         "threshold_policy_mode":policy_status,
+        "temporal_stability":temporal_stability,
         "applied_threshold_min":float(np.min(finite_thresholds)) if len(finite_thresholds) else None,
         "applied_threshold_max":float(np.max(finite_thresholds)) if len(finite_thresholds) else None,
     }
 
 
-def quality_gate(test_frame,test_probability,rr,policy):
+def quality_gate(test_frame,test_probability,rr,policy,temporal_stability=None):
     mask,thresholds=apply_threshold_policy(test_frame,test_probability,policy)
     return quality_gate_from_selection(
-        test_frame,test_probability,mask,thresholds,rr,
+        test_frame,
+        test_probability,
+        mask,
+        thresholds,
+        rr,
         policy_status=None if not policy else policy.get("mode"),
+        temporal_stability=temporal_stability,
     )
