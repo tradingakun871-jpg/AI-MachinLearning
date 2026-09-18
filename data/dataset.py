@@ -2,10 +2,12 @@ import argparse
 from pathlib import Path
 import numpy as np
 import pandas as pd
+
 from data.feature_builder import add_market_features
 from data.multitimeframe import attach_htf_context
 from smc.engine import add_smc_features
-from ml.labeling import triple_barrier_label
+from ml.labeling import barrier_outcome
+from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance
 
 
 def load_csv(path):
@@ -14,66 +16,66 @@ def load_csv(path):
     return d.sort_values("timestamp").reset_index(drop=True)
 
 
-def _direction(row):
-    for key in ("mss","bos","liquidity_sweep_direction"):
-        value=int(row.get(key,0) or 0)
-        if value != 0:
-            return 1 if value > 0 else -1
-    value=int(row.get("structure_bias",0) or 0)
-    return 1 if value > 0 else -1 if value < 0 else 0
-
-
 def build(m3,m5,m15,rr=3.0,horizon=80):
     d=add_smc_features(add_market_features(m3))
     d=attach_htf_context(d,m5,m15)
     d["trend_m3"]=d["structure_bias"]
+    d=add_setup_features(d)
+    d=add_session_name(d)
     d["source_index"]=np.arange(len(d),dtype=int)
 
-    labels=[]
-    directions=[]
-    candidates=[]
+    labels=[]; entries=[]; stops=[]; tps=[]; bars_to_outcome=[]; reasons=[]
+    stop_atr=[]
 
     for i,row in d.iterrows():
-        direction=_direction(row)
-        directions.append(direction)
+        if int(row.get("candidate",0) or 0)!=1:
+            labels.append(None); entries.append(np.nan); stops.append(np.nan); tps.append(np.nan)
+            bars_to_outcome.append(np.nan); reasons.append("NOT_CANDIDATE"); stop_atr.append(np.nan)
+            continue
+        if i+1>=len(d):
+            labels.append(None); entries.append(np.nan); stops.append(np.nan); tps.append(np.nan)
+            bars_to_outcome.append(np.nan); reasons.append("NO_NEXT_BAR"); stop_atr.append(np.nan)
+            continue
 
-        event=(
-            int(row.get("mss",0) or 0)!=0
-            or int(row.get("bos",0) or 0)!=0
-            or int(row.get("liquidity_sweep",0) or 0)!=0
-            or int(row.get("order_block",0) or 0)!=0
-            or int(row.get("fvg",0) or 0)!=0
-        )
-        candidate=bool(direction and event)
-        candidates.append(int(candidate))
-
-        if not candidate or pd.isna(row.get("atr")) or float(row.get("atr",0) or 0)<=0:
-            labels.append(None)
+        entry=float(d.iloc[i+1]["open"])
+        distance=structural_stop_distance(row,entry)
+        if distance is None:
+            labels.append(None); entries.append(entry); stops.append(np.nan); tps.append(np.nan)
+            bars_to_outcome.append(np.nan); reasons.append("INVALID_STOP"); stop_atr.append(np.nan)
             continue
 
         future=d.iloc[i+1:i+1+horizon]
-        if len(future)==0:
-            labels.append(None)
-            continue
-
-        side="BUY" if direction>0 else "SELL"
-        labels.append(
-            triple_barrier_label(
-                future.high,
-                future.low,
-                float(row.close),
-                side,
-                float(row.atr),
-                rr,
-            )
+        side="BUY" if int(row.signal_direction)>0 else "SELL"
+        outcome=barrier_outcome(
+            future.high,future.low,entry,side,distance,rr
         )
 
-    d["signal_direction"]=directions
-    d["label"]=labels
-    d["candidate"]=candidates
+        labels.append(outcome["label"])
+        entries.append(outcome.get("entry",entry))
+        stops.append(outcome.get("sl",np.nan))
+        tps.append(outcome.get("tp",np.nan))
+        bars_to_outcome.append(outcome.get("bars_to_outcome",np.nan))
+        reasons.append(outcome.get("reason","UNKNOWN"))
+        atr=float(row.get("atr",np.nan))
+        stop_atr.append(float(distance/atr) if np.isfinite(atr) and atr>0 else np.nan)
 
-    required=["label","trend_m5","trend_m15","atr_norm","return_3","range_atr"]
-    return d[d.candidate.eq(1)].dropna(subset=required).reset_index(drop=True)
+    d["label"]=labels
+    d["entry_price"]=entries
+    d["sl_price"]=stops
+    d["tp_price"]=tps
+    d["bars_to_outcome"]=bars_to_outcome
+    d["label_reason"]=reasons
+    d["stop_distance_atr"]=stop_atr
+
+    required=[
+        "label","trend_m5","trend_m15","atr_norm","return_3","range_atr",
+        "smc_confluence","htf_alignment","stop_distance_atr"
+    ]
+    return (
+        d[d.candidate.eq(1)]
+        .dropna(subset=required)
+        .reset_index(drop=True)
+    )
 
 
 if __name__=="__main__":
@@ -88,4 +90,4 @@ if __name__=="__main__":
     out=build(load_csv(a.m3),load_csv(a.m5),load_csv(a.m15),a.rr,a.horizon)
     Path(a.output).parent.mkdir(parents=True,exist_ok=True)
     out.to_csv(a.output,index=False)
-    print({"rows":len(out),"output":a.output,"engine":"SMC-v0.9"})
+    print({"rows":len(out),"output":a.output,"engine":"SMC-v0.11"})
