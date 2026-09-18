@@ -126,7 +126,7 @@ class TrainingManager:
 
         if self.xau_task and not self.xau_task.done():
             return
-        if self.task and not self.task.done():
+        if self.task and not self.task.done() and self.state["BTCUSD"].get("status") != "READY":
             self._update("XAUUSD", status="WAITING_FOR_BTC_TRAINING", history=history)
             return
         self.xau_task=asyncio.create_task(self._train_xau(), name="xau-model-training")
