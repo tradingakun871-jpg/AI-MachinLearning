@@ -8,6 +8,7 @@ from live.model_loader import LiveModelLoader
 from live.shadow import ShadowJournal
 from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance
 from ml.quality import threshold_for_context
+from ml.hybrid import apply_hybrid_gate
 
 
 class LiveInference:
@@ -17,7 +18,7 @@ class LiveInference:
         self.loader=LiveModelLoader()
         self.journal=ShadowJournal()
 
-    def analyze(self,symbol,m3,m5,m15,version="v0.11.3"):
+    def analyze(self,symbol,m3,m5,m15,version="v0.11.4"):
         bundle=self.loader.load(symbol,version)
         if bundle is None:
             return {
@@ -125,7 +126,42 @@ class LiveInference:
         rr=float(bundle.get("rr",self.rr))
         threshold=float(threshold)
         expected_r=p*rr-(1-p)
-        qualified=bool(p>=threshold and expected_r>0)
+        supervised_take=bool(p>=threshold)
+
+        linear_model=side_bundle.get("linear_model")
+        linear_policy=side_bundle.get("linear_policy") or {}
+        linear_expected_r=None
+        linear_take=False
+        if linear_model is not None:
+            linear_expected_r=float(linear_model.predict(row[features])[0])
+            linear_threshold=linear_policy.get("threshold")
+            linear_take=bool(
+                linear_threshold is not None
+                and linear_expected_r>=float(linear_threshold)
+            )
+
+        rl_policy=side_bundle.get("rl_policy")
+        rl_advantage=None
+        rl_take=False
+        if rl_policy is not None and linear_expected_r is not None:
+            rl_state=np.c_[
+                row[features].to_numpy(dtype=float),
+                np.asarray([linear_expected_r],dtype=float),
+            ]
+            rl_mask,rl_adv=rl_policy.select(rl_state)
+            rl_take=bool(rl_mask[0])
+            rl_advantage=float(rl_adv[0])
+
+        hybrid_gate=side_bundle.get("hybrid_gate") or {}
+        hybrid_mode=hybrid_gate.get("mode","NONE")
+        hybrid_mask=apply_hybrid_gate(
+            hybrid_mode,
+            np.asarray([supervised_take]),
+            np.asarray([linear_take]),
+            np.asarray([rl_take]),
+        )
+        hybrid_take=bool(hybrid_mask[0])
+        qualified=bool(hybrid_take and expected_r>0)
 
         event_row={
             "status":"OK",
@@ -134,12 +170,18 @@ class LiveInference:
             "side":side,
             "probability":round(p,4),
             "expected_r":round(expected_r,4),
+            "linear_expected_r":None if linear_expected_r is None else round(linear_expected_r,4),
+            "rl_advantage":None if rl_advantage is None else round(rl_advantage,4),
+            "supervised_confirm":supervised_take,
+            "linear_confirm":linear_take,
+            "rl_confirm":rl_take,
+            "hybrid_gate":hybrid_mode,
             "regime":int(row.regime.iloc[0]),
             "session":session,
             "smc_confluence":int(row.smc_confluence.iloc[0]),
             "htf_alignment":int(row.htf_alignment.iloc[0]),
             "threshold":round(threshold,4),
-            "threshold_policy":"SIDE_CONTEXTUAL",
+            "threshold_policy":"HYBRID_LINEAR_RL",
             "qualified":qualified,
             "quality_gate":"PASSED",
             "mode":"SHADOW_RESEARCH",
