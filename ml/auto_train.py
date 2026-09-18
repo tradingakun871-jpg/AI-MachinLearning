@@ -11,6 +11,9 @@ from data.coinbase import CoinbaseBTCFeed
 from data.dataset import build
 from ml.features import FEATURE_COLUMNS
 from ml.model import ProbabilityEnsemble
+from ml.linear_edge import LinearEdgeRegressor, learn_linear_threshold, regression_diagnostics
+from ml.rl_policy import OfflineQPolicy, q_diagnostics
+from ml.hybrid import learn_hybrid_gate, apply_hybrid_gate
 from ml.model_registry import ModelRegistry
 from ml.performance import probability_metrics, trading_metrics
 from ml.quality import (
@@ -25,9 +28,9 @@ from ml.stability import evaluate_temporal_stability
 
 
 class TrainingManager:
-    """V0.11.3 side-specific learning with temporal stability and robust calibration."""
+    """V0.11.4 hybrid supervised + linear regression + offline Q-learning research loop."""
 
-    def __init__(self, shadow_service, version="v0.11.3"):
+    def __init__(self, shadow_service, version="v0.11.4"):
         self.shadow = shadow_service
         self.version = version
         self.registry = ModelRegistry()
@@ -71,7 +74,7 @@ class TrainingManager:
             meta = self.registry.metadata(symbol, self.version)
         except Exception:
             meta = {}
-        if self.version == "v0.11.3" and not meta.get("temporal_stability"):
+        if self.version == "v0.11.4" and not meta.get("hybrid_algorithms"):
             return False
         self._update(
             symbol,
@@ -91,7 +94,7 @@ class TrainingManager:
         if self.task and not self.task.done():
             return
         self.task = asyncio.create_task(
-            self._train_btc(), name="btc-model-training-v0113"
+            self._train_btc(), name="btc-model-training-v0114"
         )
 
     async def start_xau(self, force=False):
@@ -120,7 +123,7 @@ class TrainingManager:
             return
 
         self.xau_task = asyncio.create_task(
-            self._train_xau(), name="xau-model-training-v0113"
+            self._train_xau(), name="xau-model-training-v0114"
         )
 
     @staticmethod
@@ -166,15 +169,92 @@ class TrainingManager:
         if len(selected_features) < 10:
             selected_features = features[: min(24, len(features))]
 
+        # Non-linear probability ensemble.
         model = ProbabilityEnsemble()
         await asyncio.to_thread(model.fit, tr[selected_features], tr["label"])
         await asyncio.to_thread(model.calibrate, ca[selected_features], ca["label"])
 
+        # Linear regression predicts realized R directly (+RR / -1R).
+        linear = LinearEdgeRegressor(alpha=8.0)
+        await asyncio.to_thread(
+            linear.fit, tr[selected_features], tr["label"], rr
+        )
+
+        tr_linear = linear.predict(tr[selected_features])
+        ca_linear = linear.predict(ca[selected_features])
+        te_linear = linear.predict(te[selected_features])
+        linear_policy = learn_linear_threshold(
+            ca_linear, ca["label"], rr=rr,
+            min_trades=max(10, int(len(ca)*0.03)),
+            min_coverage=0.03,
+        )
+        linear_threshold = linear_policy.get("threshold")
+        ca_linear_take = (
+            ca_linear >= float(linear_threshold)
+            if linear_threshold is not None
+            else np.zeros(len(ca), dtype=bool)
+        )
+        te_linear_take = (
+            te_linear >= float(linear_threshold)
+            if linear_threshold is not None
+            else np.zeros(len(te), dtype=bool)
+        )
+
+        # Offline fitted Q-learning is a second confirmation layer. It learns
+        # TRADE vs SKIP from sequential historical candidates. Linear expected
+        # R is included as one state feature.
+        rl = OfflineQPolicy(gamma=0.10, iterations=4)
+        tr_state = np.c_[
+            tr[selected_features].to_numpy(dtype=float),
+            tr_linear,
+        ]
+        ca_state = np.c_[
+            ca[selected_features].to_numpy(dtype=float),
+            ca_linear,
+        ]
+        te_state = np.c_[
+            te[selected_features].to_numpy(dtype=float),
+            te_linear,
+        ]
+        await asyncio.to_thread(rl.fit, tr_state, tr["label"], rr)
+        rl_policy = rl.calibrate_margin(
+            ca_state, ca["label"], rr=rr,
+            min_trades=max(10, int(len(ca)*0.03)),
+            min_coverage=0.03,
+        )
+        ca_rl_take, ca_rl_adv = rl.select(ca_state)
+        te_rl_take, te_rl_adv = rl.select(te_state)
+
+        # Supervised threshold policy remains the primary probability gate.
         cal_p = model.predict_proba(ca[selected_features])
-        policy = learn_threshold_policy(ca, cal_p, rr=rr)
+        threshold_policy = learn_threshold_policy(ca, cal_p, rr=rr)
+        ca_supervised_take, _ = apply_threshold_policy(
+            ca, cal_p, threshold_policy
+        )
+
+        # Let calibration data decide whether linear/RL confirmation actually
+        # adds value. We do not force them into the final policy.
+        hybrid_gate = learn_hybrid_gate(
+            ca["label"],
+            ca_supervised_take,
+            ca_linear_take,
+            ca_rl_take,
+            rr=rr,
+            min_trades=max(10, int(len(ca)*0.03)),
+            min_coverage=0.03,
+        )
 
         test_p = model.predict_proba(te[selected_features])
-        test_take, test_thresholds = apply_threshold_policy(te, test_p, policy)
+        te_supervised_take, test_thresholds = apply_threshold_policy(
+            te, test_p, threshold_policy
+        )
+        test_take = apply_hybrid_gate(
+            hybrid_gate.get("mode"),
+            te_supervised_take,
+            te_linear_take,
+            te_rl_take,
+        )
+
         test_trade = (
             trading_metrics(
                 te.loc[test_take, "label"],
@@ -186,14 +266,22 @@ class TrainingManager:
             else {"trades": 0}
         )
         test_prob = probability_metrics(te["label"], test_p)
-
         final_importance = model.feature_importance(selected_features)
+
         return {
             "bundle": {
                 "model": model,
+                "linear_model": linear,
+                "linear_policy": linear_policy,
+                "rl_policy": rl,
+                "rl_policy_meta": rl_policy,
                 "features": selected_features,
-                "threshold_policy": policy,
-                "enabled": policy.get("mode") != "NONE",
+                "threshold_policy": threshold_policy,
+                "hybrid_gate": hybrid_gate,
+                "enabled": (
+                    threshold_policy.get("mode") != "NONE"
+                    and hybrid_gate.get("mode") != "NONE"
+                ),
                 "side": side,
             },
             "cal_probability": cal_p,
@@ -208,9 +296,29 @@ class TrainingManager:
                 "selected_features": selected_features,
                 "selected_feature_count": int(len(selected_features)),
                 "feature_importance": final_importance[:20],
-                "threshold_policy": policy,
+                "threshold_policy": threshold_policy,
                 "calibration_method": model.calibration_method,
                 "calibration_diagnostics": model.calibration_diagnostics,
+                "linear_regression": {
+                    "policy": linear_policy,
+                    "calibration": regression_diagnostics(
+                        ca_linear, ca["label"], rr
+                    ),
+                    "test": regression_diagnostics(
+                        te_linear, te["label"], rr
+                    ),
+                },
+                "reinforcement_learning": {
+                    "algorithm": "OFFLINE_FITTED_Q_LEARNING",
+                    "policy": rl_policy,
+                    "calibration": q_diagnostics(
+                        rl, ca_state, ca["label"], rr
+                    ),
+                    "test": q_diagnostics(
+                        rl, te_state, te["label"], rr
+                    ),
+                },
+                "hybrid_gate": hybrid_gate,
                 "calibration_probability_diagnostics": probability_diagnostics(
                     ca["label"], cal_p, ca
                 ),
@@ -221,6 +329,8 @@ class TrainingManager:
                 "test_trading": test_trade,
                 "test_selected_rows": int(np.sum(test_take)),
                 "test_coverage": float(np.mean(test_take)) if len(test_take) else 0.0,
+                "test_linear_selected_rows": int(np.sum(te_linear_take)),
+                "test_rl_selected_rows": int(np.sum(te_rl_take)),
             },
         }
 
@@ -277,6 +387,7 @@ class TrainingManager:
             raise RuntimeError(f"missing training features: {missing}")
 
         self._update(symbol, status="FEATURE_PRUNING")
+        self._update(symbol, status="TRAINING_LINEAR_RL")
         self._update(symbol, status="TRAINING_SIDE_MODELS")
 
         buy = await self._fit_side("BUY", 1, train, cal, test, features, rr)
@@ -307,7 +418,7 @@ class TrainingManager:
             combined_take,
             combined_thresholds,
             rr,
-            policy_status="SIDE_CONTEXTUAL",
+            policy_status="HYBRID_LINEAR_RL",
             temporal_stability=temporal_stability,
         )
 
@@ -333,6 +444,11 @@ class TrainingManager:
             "test_rows": int(len(test)),
             "side_models": side_metrics,
             "threshold_policy": threshold_policy,
+            "hybrid_algorithms": {
+                "probability_models": ["LightGBM","XGBoost"],
+                "linear_regression": "RidgeLinearRegressionExpectedR",
+                "reinforcement_learning": "OfflineFittedQLearningTradeSkip",
+            },
             "temporal_stability": temporal_stability,
             "feature_importance": aggregate_importance[:25],
             "probability": gate["probability"],
@@ -355,6 +471,10 @@ class TrainingManager:
             "symbol": symbol,
             "version": self.version,
             "threshold_policy": threshold_policy,
+            "hybrid_algorithms": {
+                "linear_regression": "RidgeLinearRegressionExpectedR",
+                "reinforcement_learning": "OfflineFittedQLearningTradeSkip",
+            },
             "temporal_stability": temporal_stability,
             "quality_gate": gate,
         }
@@ -399,7 +519,7 @@ class TrainingManager:
                 timeout=30.0,
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "AI-Market-Intelligence-Trainer/0.11.3",
+                    "User-Agent": "AI-Market-Intelligence-Trainer/0.11.4",
                 },
             ) as client:
                 m1 = await feed._fetch_candles(client, 60, days * 24 * 60)
