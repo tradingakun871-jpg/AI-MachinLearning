@@ -493,7 +493,8 @@ function fmtTime(v){return v?String(v).replace("T"," ").replace("Z","").slice(0,
 
 function drawTrainingState(status, meta={}, visualOnly=false){
   const visualMap={
-    TEMPORAL_WALK_FORWARD:"TRAINING_REGIME",\n    FEATURE_PRUNING:"TRAINING_ENSEMBLE",
+    TEMPORAL_WALK_FORWARD:"TRAINING_REGIME",
+    FEATURE_PRUNING:"TRAINING_ENSEMBLE",
     TRAINING_SIDE_MODELS:"TRAINING_ENSEMBLE",
     LEARNING_CONTEXT_POLICY:"VALIDATING",
     VALIDATING_QUALITY:"VALIDATING"
