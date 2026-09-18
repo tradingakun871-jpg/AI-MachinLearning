@@ -57,7 +57,8 @@ def build(m3,m5,m15,rr=3.0,horizon=80):
         bars_to_outcome.append(outcome.get("bars_to_outcome",np.nan))
         reasons.append(outcome.get("reason","UNKNOWN"))
         atr=float(row.get("atr",np.nan))
-        stop_atr.append(float(distance/atr) if np.isfinite(atr) and atr>0 else np.nan)
+        planned=structural_stop_distance(row,float(row.close))
+        stop_atr.append(float(planned/atr) if planned is not None and np.isfinite(atr) and atr>0 else np.nan)
 
     d["label"]=labels
     d["entry_price"]=entries
