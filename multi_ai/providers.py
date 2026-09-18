@@ -8,6 +8,14 @@ import httpx
 
 VALID_DECISIONS = {"BUY", "SELL", "NO_TRADE"}
 RETRYABLE_HTTP = {500, 502, 503, 504}
+TRANSIENT_PROVIDER_ERRORS = {
+    "provider_timeout",
+    "provider_network_error",
+    "provider_http_500",
+    "provider_http_502",
+    "provider_http_503",
+    "provider_http_504",
+}
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
@@ -172,13 +180,22 @@ def _gemini_interactions_text(data: dict[str, Any]) -> str:
                 chunks.append(part["text"])
     if chunks:
         return "\n".join(chunks)
-    # Defensive compatibility with alternate/older response shapes.
     if data.get("output_text"):
         return str(data["output_text"])
     return ""
 
 
-async def _call_gemini_model(prompt: str, key: str, model: str) -> dict[str, Any]:
+def _gemini_generate_text(data: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for candidate in data.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            if part.get("text"):
+                chunks.append(str(part["text"]))
+    return "\n".join(chunks)
+
+
+async def _call_gemini_interactions(prompt: str, key: str, model: str) -> dict[str, Any]:
     base = os.getenv("GEMINI_INTERACTIONS_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
     data = await _post(
         f"{base}/interactions",
@@ -192,33 +209,57 @@ async def _call_gemini_model(prompt: str, key: str, model: str) -> dict[str, Any
                 "max_output_tokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "1200")),
             },
         },
-        timeout=float(os.getenv("GEMINI_TIMEOUT", "35")),
-        retries=int(os.getenv("GEMINI_RETRIES", "2")),
+        timeout=float(os.getenv("GEMINI_INTERACTIONS_TIMEOUT", "15")),
+        retries=int(os.getenv("GEMINI_INTERACTIONS_RETRIES", "0")),
     )
-    text = _gemini_interactions_text(data)
-    return normalize_vote("gemini", _json_from_text(text), model)
+    return normalize_vote("gemini", _json_from_text(_gemini_interactions_text(data)), model)
+
+
+async def _call_gemini_generate_content(prompt: str, key: str, model: str) -> dict[str, Any]:
+    base = os.getenv("GEMINI_GENERATE_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    data = await _post(
+        f"{base}/models/{model}:generateContent",
+        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+        json_body={
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "thinkingConfig": {"thinkingLevel": os.getenv("GEMINI_THINKING_LEVEL", "low")},
+                "maxOutputTokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "1200")),
+            },
+        },
+        timeout=float(os.getenv("GEMINI_GENERATE_TIMEOUT", "20")),
+        retries=int(os.getenv("GEMINI_GENERATE_RETRIES", "0")),
+    )
+    return normalize_vote("gemini", _json_from_text(_gemini_generate_text(data)), model)
 
 
 async def call_gemini(prompt: str) -> dict[str, Any]:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     primary = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
     fallback = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash").strip()
+    mode = os.getenv("GEMINI_API_MODE", "auto").strip().lower()
     if not key:
         raise RuntimeError("GEMINI_API_KEY not configured")
-    try:
-        return await _call_gemini_model(prompt, key, primary)
-    except RuntimeError as exc:
-        # Same provider fallback only for transient availability/network failures.
-        if fallback and fallback != primary and str(exc) in {
-            "provider_timeout",
-            "provider_network_error",
-            "provider_http_500",
-            "provider_http_502",
-            "provider_http_503",
-            "provider_http_504",
-        }:
-            return await _call_gemini_model(prompt, key, fallback)
-        raise
+
+    last_error: Exception | None = None
+    if mode in {"auto", "interactions"}:
+        try:
+            return await _call_gemini_interactions(prompt, key, primary)
+        except RuntimeError as exc:
+            last_error = exc
+            if mode == "interactions" or str(exc) not in TRANSIENT_PROVIDER_ERRORS:
+                raise
+
+    if mode in {"auto", "generatecontent", "generate_content"}:
+        try:
+            return await _call_gemini_generate_content(prompt, key, primary)
+        except RuntimeError as exc:
+            last_error = exc
+            if fallback and fallback != primary and str(exc) in TRANSIENT_PROVIDER_ERRORS:
+                return await _call_gemini_generate_content(prompt, key, fallback)
+            raise
+
+    raise RuntimeError(str(last_error or "invalid GEMINI_API_MODE"))
 
 
 async def call_deepseek(prompt: str) -> dict[str, Any]:
