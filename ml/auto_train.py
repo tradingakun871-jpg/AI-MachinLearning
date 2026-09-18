@@ -6,6 +6,7 @@ import httpx
 import numpy as np
 from sklearn.metrics import average_precision_score
 
+from app.database import save_training_state
 from data.coinbase import CoinbaseBTCFeed
 from data.dataset import build
 from ml.features import FEATURE_COLUMNS
@@ -48,25 +49,54 @@ class TrainingManager:
     def status(self):
         return self.state
 
+    def _persist(self, symbol):
+        try:
+            save_training_state(symbol, self.state[symbol])
+        except Exception:
+            pass
+
+    def _update(self, symbol, **values):
+        self.state[symbol].update(values)
+        self._persist(symbol)
+
     async def start_btc(self, force=False):
         existing = self.registry.path("BTCUSD", self.version) / "model.joblib"
         if existing.exists() and not force:
-            self.state["BTCUSD"]["status"] = "READY"
+            metrics=None
+            finished=None
+            rows=0
+            try:
+                meta=self.registry.metadata("BTCUSD", self.version)
+                metrics={k:v for k,v in meta.items() if k not in ("trained_at","mode")}
+                finished=meta.get("trained_at")
+                rows=int(meta.get("dataset_rows") or 0)
+            except Exception:
+                pass
+            self._update(
+                "BTCUSD",
+                status="READY",
+                version=self.version,
+                finished_at=finished,
+                dataset_rows=rows,
+                metrics=metrics,
+                error=None,
+            )
             return
         if self.task and not self.task.done():
             return
         self.task = asyncio.create_task(self._train_btc(), name="btc-model-training")
 
     async def _train_btc(self):
+        self._update(
+            "BTCUSD",
+            status="DOWNLOADING_HISTORY",
+            started_at=datetime.now(timezone.utc).isoformat(),
+            finished_at=None,
+            error=None,
+            dataset_rows=0,
+            metrics=None,
+        )
         s = self.state["BTCUSD"]
-        s.update({
-            "status": "DOWNLOADING_HISTORY",
-            "started_at": datetime.now(timezone.utc).isoformat(),
-            "finished_at": None,
-            "error": None,
-            "dataset_rows": 0,
-            "metrics": None,
-        })
 
         try:
             days = max(7, int(os.getenv("BTC_TRAIN_DAYS", "30")))
@@ -81,7 +111,7 @@ class TrainingManager:
             async with httpx.AsyncClient(
                 base_url=feed.BASE_URL,
                 timeout=30.0,
-                headers={"Accept": "application/json", "User-Agent": "AI-Market-Intelligence-Trainer/0.9"},
+                headers={"Accept": "application/json", "User-Agent": "AI-Market-Intelligence-Trainer/0.10"},
             ) as client:
                 m1 = await feed._fetch_candles(client, 60, m1_points)
                 m5 = await feed._fetch_candles(client, 300, m5_points)
@@ -93,10 +123,10 @@ class TrainingManager:
                     f"insufficient Coinbase history: M3={len(m3)} M5={len(m5)} M15={len(m15)}"
                 )
 
-            s["status"] = "BUILDING_DATASET"
+            self._update("BTCUSD", status="BUILDING_DATASET")
             dataset = await asyncio.to_thread(build, m3, m5, m15, rr, horizon)
             dataset = dataset.sort_values("timestamp").reset_index(drop=True)
-            s["dataset_rows"] = int(len(dataset))
+            self._update("BTCUSD", dataset_rows=int(len(dataset)))
 
             if len(dataset) < 1000:
                 raise RuntimeError(f"insufficient resolved SMC training candidates: {len(dataset)}")
@@ -124,7 +154,7 @@ class TrainingManager:
             if len(np.unique(train["label"])) < 2 or len(np.unique(test["label"])) < 2:
                 raise RuntimeError("training/test split must contain wins and losses")
 
-            s["status"] = "TRAINING_REGIME"
+            self._update("BTCUSD", status="TRAINING_REGIME")
             regime = await asyncio.to_thread(RegimeClassifier().fit, train)
 
             for frame in (train, cal, test):
@@ -132,7 +162,7 @@ class TrainingManager:
 
             features = FEATURE_COLUMNS + ["regime"]
 
-            s["status"] = "TRAINING_ENSEMBLE"
+            self._update("BTCUSD", status="TRAINING_ENSEMBLE")
             model = ProbabilityEnsemble()
             await asyncio.to_thread(model.fit, train[features], train["label"])
             await asyncio.to_thread(model.calibrate, cal[features], cal["label"])
@@ -143,7 +173,7 @@ class TrainingManager:
             selected = max(viable, key=lambda x: (x.get("expectancy_r", -999), x.get("trades", 0))) if viable else None
             threshold = float(selected["threshold"]) if selected else 0.60
 
-            s["status"] = "VALIDATING"
+            self._update("BTCUSD", status="VALIDATING")
             test_p = model.predict_proba(test[features])
             prob = probability_metrics(test["label"], test_p)
             prob["pr_auc"] = float(average_precision_score(test["label"], test_p))
@@ -175,29 +205,33 @@ class TrainingManager:
                 "version": self.version,
             }
 
+            trained_at=datetime.now(timezone.utc).isoformat()
             self.registry.save(
                 "BTCUSD",
                 self.version,
                 bundle,
                 {
                     **metrics,
-                    "trained_at": datetime.now(timezone.utc).isoformat(),
+                    "trained_at": trained_at,
                     "mode": "SHADOW_RESEARCH",
                 },
             )
 
-            s.update({
-                "status": "READY",
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-                "metrics": metrics,
-            })
+            self._update(
+                "BTCUSD",
+                status="READY",
+                finished_at=trained_at,
+                metrics=metrics,
+                error=None,
+            )
 
         except asyncio.CancelledError:
-            s["status"] = "CANCELLED"
+            self._update("BTCUSD", status="CANCELLED")
             raise
         except Exception as exc:
-            s.update({
-                "status": "FAILED",
-                "finished_at": datetime.now(timezone.utc).isoformat(),
-                "error": f"{type(exc).__name__}: {exc}",
-            })
+            self._update(
+                "BTCUSD",
+                status="FAILED",
+                finished_at=datetime.now(timezone.utc).isoformat(),
+                error=f"{type(exc).__name__}: {exc}",
+            )
