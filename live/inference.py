@@ -17,7 +17,7 @@ class LiveInference:
         self.loader=LiveModelLoader()
         self.journal=ShadowJournal()
 
-    def analyze(self,symbol,m3,m5,m15,version="v0.11.2"):
+    def analyze(self,symbol,m3,m5,m15,version="v0.11.3"):
         bundle=self.loader.load(symbol,version)
         if bundle is None:
             return {
