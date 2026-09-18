@@ -17,12 +17,14 @@ class LiveInference:
         self.loader=LiveModelLoader()
         self.journal=ShadowJournal()
 
-    def analyze(self,symbol,m3,m5,m15,version="v0.11.1"):
+    def analyze(self,symbol,m3,m5,m15,version="v0.11.2"):
         bundle=self.loader.load(symbol,version)
         if bundle is None:
             return {
-                "status":"MODEL_NOT_AVAILABLE","symbol":symbol,
-                "mode":"RESEARCH","model_version":version,
+                "status":"MODEL_NOT_AVAILABLE",
+                "symbol":symbol,
+                "mode":"RESEARCH",
+                "model_version":version,
             }
 
         quality=bundle.get("quality_gate") or {}
@@ -33,6 +35,10 @@ class LiveInference:
                 "mode":"SHADOW_RESEARCH",
                 "model_version":version,
                 "quality_gate":quality.get("status","FAILED"),
+                "failed_checks":[
+                    name for name,item in (quality.get("checks") or {}).items()
+                    if not item.get("passed",False)
+                ],
             }
 
         d=add_smc_features(add_market_features(m3))
@@ -44,8 +50,30 @@ class LiveInference:
 
         if row.empty or int(row.candidate.iloc[0])!=1:
             return {
-                "status":"NO_SMC_SETUP","symbol":symbol,
-                "mode":"SHADOW_RESEARCH","model_version":version,
+                "status":"NO_SMC_SETUP",
+                "symbol":symbol,
+                "mode":"SHADOW_RESEARCH",
+                "model_version":version,
+            }
+
+        direction=int(row.signal_direction.iloc[0])
+        side="BUY" if direction>0 else "SELL"
+        side_bundle=(bundle.get("side_models") or {}).get(side)
+        if not side_bundle:
+            return {
+                "status":"SIDE_MODEL_NOT_AVAILABLE",
+                "symbol":symbol,
+                "side":side,
+                "mode":"SHADOW_RESEARCH",
+                "model_version":version,
+            }
+        if not side_bundle.get("enabled",False):
+            return {
+                "status":"SIDE_POLICY_BLOCKED",
+                "symbol":symbol,
+                "side":side,
+                "mode":"SHADOW_RESEARCH",
+                "model_version":version,
             }
 
         atr=float(row.atr.iloc[0]) if pd.notna(row.atr.iloc[0]) else 0.0
@@ -57,36 +85,46 @@ class LiveInference:
         row["regime"]=bundle["regime"].predict(row)
         regime_name=str(int(row.regime.iloc[0]))
         session=str(row.session_name.iloc[0])
-        policy=bundle.get("threshold_policy") or {}
+
+        policy=side_bundle.get("threshold_policy") or {}
         threshold=threshold_for_context(regime_name,session,policy)
         if threshold is None:
             return {
-                "status":"FILTERED_OUT","reason":"THRESHOLD_POLICY",
-                "symbol":symbol,"regime":int(row.regime.iloc[0]),
-                "session":session,"mode":"SHADOW_RESEARCH",
+                "status":"FILTERED_OUT",
+                "reason":"SIDE_CONTEXT_POLICY",
+                "symbol":symbol,
+                "side":side,
+                "regime":int(row.regime.iloc[0]),
+                "session":session,
+                "mode":"SHADOW_RESEARCH",
                 "model_version":version,
             }
 
-        features=bundle["features"]
-        missing=[c for c in features if c not in row]
+        features=side_bundle.get("features") or []
+        missing=[name for name in features if name not in row]
         if missing:
             return {
-                "status":"FEATURE_MISMATCH","missing":missing,
-                "symbol":symbol,"mode":"RESEARCH","model_version":version,
+                "status":"FEATURE_MISMATCH",
+                "missing":missing,
+                "symbol":symbol,
+                "side":side,
+                "mode":"RESEARCH",
+                "model_version":version,
             }
 
         if row[features].isna().any(axis=None):
             return {
-                "status":"FEATURE_NOT_READY","symbol":symbol,
-                "mode":"SHADOW_RESEARCH","model_version":version,
+                "status":"FEATURE_NOT_READY",
+                "symbol":symbol,
+                "side":side,
+                "mode":"SHADOW_RESEARCH",
+                "model_version":version,
             }
 
-        p=float(bundle["model"].predict_proba(row[features])[0])
+        p=float(side_bundle["model"].predict_proba(row[features])[0])
         rr=float(bundle.get("rr",self.rr))
-        threshold=float(bundle.get("threshold",self.threshold))
+        threshold=float(threshold)
         expected_r=p*rr-(1-p)
-        direction=int(row.signal_direction.iloc[0])
-        side="BUY" if direction>0 else "SELL"
         qualified=bool(p>=threshold and expected_r>0)
 
         event_row={
@@ -101,14 +139,13 @@ class LiveInference:
             "smc_confluence":int(row.smc_confluence.iloc[0]),
             "htf_alignment":int(row.htf_alignment.iloc[0]),
             "threshold":round(threshold,4),
+            "threshold_policy":"SIDE_CONTEXTUAL",
             "qualified":qualified,
             "quality_gate":"PASSED",
             "mode":"SHADOW_RESEARCH",
             "model_version":version,
         }
 
-        # The shadow journal contains only qualified signals from models that
-        # passed the independent quality gate.
         if qualified:
             self.journal.record(event_row)
         return event_row
