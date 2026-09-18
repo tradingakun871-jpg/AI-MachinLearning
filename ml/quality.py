@@ -269,7 +269,7 @@ def apply_threshold_policy(frame,probability,policy):
     return take,thresholds
 
 
-def quality_gate_from_selection(test_frame,test_probability,selected_mask,applied_thresholds,rr,policy_status="CUSTOM"):
+def quality_gate_from_selection(test_frame,test_probability,selected_mask,applied_thresholds,rr,policy_status="CUSTOM",temporal_stability=None):
     y=np.asarray(test_frame["label"],dtype=int)
     p=np.asarray(test_probability,dtype=float)
     selected_mask=np.asarray(selected_mask,dtype=bool)
