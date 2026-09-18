@@ -15,11 +15,11 @@ from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
 from ml.auto_train import TrainingManager
 
-VERSION="0.11.3"
+VERSION="0.11.4"
 agent=MarketAgent()
 shadow=ShadowService()
 coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
-trainer=TrainingManager(shadow,version="v0.11.3")
+trainer=TrainingManager(shadow,version="v0.11.4")
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
@@ -43,7 +43,7 @@ def bridge_configured():
     token=os.getenv("BRIDGE_TOKEN","")
     return bool(token and token!="change-me")
 
-def model_available(symbol,version="v0.11.3"):
+def model_available(symbol,version="v0.11.4"):
     return Path("artifacts/models")/symbol.upper()/version/"model.joblib"
 
 @app.get("/health")
@@ -81,7 +81,7 @@ def model_quality():
             "threshold_policy":((trainer.status().get(symbol,{}).get("metrics") or {}).get("threshold_policy")),
             "side_models":((trainer.status().get(symbol,{}).get("metrics") or {}).get("side_models")),
             "probability_diagnostics":((trainer.status().get(symbol,{}).get("metrics") or {}).get("probability_diagnostics")),
-            "temporal_stability":((trainer.status().get(symbol,{}).get("metrics") or {}).get("temporal_stability")),
+            "temporal_stability":((trainer.status().get(symbol,{}).get("metrics") or {}).get("temporal_stability")),\n            "hybrid_algorithms":((trainer.status().get(symbol,{}).get("metrics") or {}).get("hybrid_algorithms")),
         }
         for symbol in ("XAUUSD","BTCUSD")
     }
@@ -113,7 +113,7 @@ def live_status():
         passed=bool(quality.get("passed",False))
         model_status[symbol]={
             "available":path.exists(),
-            "version":"v0.11.3" if path.exists() else None,
+            "version":"v0.11.4" if path.exists() else None,
             "quality_passed":passed,
             "state":("READY_QUALITY_PASSED" if passed else "READY_QUALITY_BLOCKED") if path.exists() else "MODEL_NOT_AVAILABLE",
         }
@@ -213,7 +213,7 @@ def dashboard():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI Market Intelligence V0.11.3</title>
+<title>AI Market Intelligence V0.11.4</title>
 <style>
 :root{--bg:#080d1b;--panel:#11192b;--panel2:#172137;--text:#eef3ff;--muted:#8fa0bd;--line:#26324c;--green:#49e59a;--amber:#ffcb66;--red:#ff7184;--blue:#68a7ff}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#070b16,#0a1020);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -295,7 +295,7 @@ a{color:#8bb8ff;text-decoration:none}
 <body>
 <div class="wrap">
   <div class="top">
-    <div><h1>AI Market Intelligence Agent V0.11.3</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
+    <div><h1>AI Market Intelligence Agent V0.11.4</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
     <div class="badge"><span class="dot"></span><span id="apiState">Checking API…</span></div>
   </div>
 
@@ -326,8 +326,8 @@ a{color:#8bb8ff;text-decoration:none}
       <p class="small" id="coinbaseDetail">Waiting for first Coinbase sync…</p>
     </div>
 
-    <div class="card span4"><div class="k">XAUUSD ML Model</div><div class="v" id="xauModel">—</div><div class="small">Separate BUY/SELL models with auto calibration and temporal stability gating.</div></div>
-    <div class="card span4"><div class="k">BTCUSD ML Model</div><div class="v" id="btcModel">—</div><div class="small">90-day Coinbase training, walk-forward stability, side models and contextual thresholds.</div></div>
+    <div class="card span4"><div class="k">XAUUSD ML Model</div><div class="v" id="xauModel">—</div><div class="small">Hybrid BUY/SELL: LightGBM + XGBoost + Linear Regression + Offline Q-Learning.</div></div>
+    <div class="card span4"><div class="k">BTCUSD ML Model</div><div class="v" id="btcModel">—</div><div class="small">90-day Coinbase training with linear expected-R and offline reinforcement-learning confirmation.</div></div>
     <div class="card span4"><div class="k">Performance</div><div class="v warn">N/A</div><div class="small">Win rate / PF / DD require validated outcomes.</div></div>
 
 
@@ -335,7 +335,7 @@ a{color:#8bb8ff;text-decoration:none}
       <div class="train-head">
         <div>
           <div class="k">BTCUSD ML MODEL TRAINING</div>
-          <div class="train-title">Coinbase History → Walk-Forward Stability → BUY/SELL Models → Calibration → Context Policy → Quality Gate</div>
+          <div class="train-title">History → Walk-Forward → LightGBM/XGBoost → Linear Regression → Offline Q-Learning → Quality Gate</div>
           <div class="small" id="trainSub">Live backend training state. Animation reflects the actual training pipeline.</div>
         </div>
         <div class="train-actions">
@@ -353,9 +353,9 @@ a{color:#8bb8ff;text-decoration:none}
         <div class="train-step" id="step0" data-num="1"><div class="train-flow"></div><div class="step-no">1</div><div class="step-name">DOWNLOADING HISTORY</div><div class="step-desc">Fetching closed BTC-USD candles from Coinbase.</div></div>
         <div class="train-step" id="step1" data-num="2"><div class="train-flow"></div><div class="step-no">2</div><div class="step-name">BUILDING DATASET</div><div class="step-desc">SMC features, MTF context, labels and purged splits.</div></div>
         <div class="train-step" id="step2" data-num="3"><div class="train-flow"></div><div class="step-no">3</div><div class="step-name">TRAINING REGIME</div><div class="step-desc">Learning market regime clusters from training-only data.</div></div>
-        <div class="train-step" id="step3" data-num="4"><div class="train-flow"></div><div class="step-no">4</div><div class="step-name">BUY / SELL MODELS</div><div class="step-desc">Feature pruning, then separate LightGBM + XGBoost ensembles.</div></div>
+        <div class="train-step" id="step3" data-num="4"><div class="train-flow"></div><div class="step-no">4</div><div class="step-name">HYBRID MODELS</div><div class="step-desc">LightGBM + XGBoost + Linear Regression + offline Q-learning confirmation.</div></div>
         <div class="train-step" id="step4" data-num="5"><div class="train-flow"></div><div class="step-no">5</div><div class="step-name">CONTEXT + QUALITY</div><div class="step-desc">Regime×session thresholds, diagnostics and independent holdout gate.</div></div>
-        <div class="train-step" id="step5" data-num="6"><div class="train-flow"></div><div class="step-no">6</div><div class="step-name">READY v0.11.3</div><div class="step-desc">Validated artifact available for shadow inference.</div></div>
+        <div class="train-step" id="step5" data-num="6"><div class="train-flow"></div><div class="step-no">6</div><div class="step-name">READY v0.11.4</div><div class="step-desc">Validated artifact available for shadow inference.</div></div>
       </div>
 
       <div class="train-meta">
@@ -368,7 +368,7 @@ a{color:#8bb8ff;text-decoration:none}
 
       <div class="ready-burst" id="readyBurst">
         <div class="ready-check">✓</div>
-        <div><b>BTCUSD V0.11.3 training artifact is READY.</b><div class="small">Shadow signals remain blocked unless the independent quality gate passes.</div></div>
+        <div><b>BTCUSD V0.11.4 training artifact is READY.</b><div class="small">Shadow signals remain blocked unless the independent quality gate passes.</div></div>
       </div>
     </div>
 
@@ -479,7 +479,7 @@ a{color:#8bb8ff;text-decoration:none}
       <div class="small" style="margin-top:11px">API docs: <a href="/docs">/docs</a> · Live status: <a href="/api/live/status">/api/live/status</a> · Training status: <a href="/api/training/status">/api/training/status</a></div>
     </div>
   </div>
-  <div class="footer">V0.11.3 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
+  <div class="footer">V0.11.4 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -494,7 +494,7 @@ function fmtTime(v){return v?String(v).replace("T"," ").replace("Z","").slice(0,
 function drawTrainingState(status, meta={}, visualOnly=false){
   const visualMap={
     TEMPORAL_WALK_FORWARD:"TRAINING_REGIME",
-    FEATURE_PRUNING:"TRAINING_ENSEMBLE",
+    FEATURE_PRUNING:"TRAINING_ENSEMBLE",\n    TRAINING_LINEAR_RL:"TRAINING_ENSEMBLE",
     TRAINING_SIDE_MODELS:"TRAINING_ENSEMBLE",
     LEARNING_CONTEXT_POLICY:"VALIDATING",
     VALIDATING_QUALITY:"VALIDATING"
@@ -520,7 +520,7 @@ function drawTrainingState(status, meta={}, visualOnly=false){
   $("trainStatus").textContent=status.replaceAll("_"," ");
   $("readyBurst").classList.toggle("show",visualStatus==="READY");
   if(!visualOnly){
-    $("trainVersion").textContent=meta.version||"v0.11.3";
+    $("trainVersion").textContent=meta.version||"v0.11.4";
     $("trainRows").textContent=(meta.dataset_rows||0).toLocaleString();
     $("trainStarted").textContent=fmtTime(meta.started_at);
     $("trainFinished").textContent=fmtTime(meta.finished_at);
