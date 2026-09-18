@@ -1,3 +1,6 @@
+import os
+import time
+
 import numpy as np
 import pandas as pd
 
@@ -26,9 +29,8 @@ def _dominant_freq(ts: pd.Series) -> str:
 def chronos_predict_compat(df: pd.DataFrame, horizon: int):
     pipe = core.get_chronos()
 
-    # Chronos dataframe validation currently has edge cases with pandas
-    # extension/reference dtypes and timezone-aware timestamps. Feed it
-    # concrete NumPy-backed dtypes and an explicit market frequency.
+    # Feed Chronos concrete NumPy-backed dtypes, timezone-naive timestamps,
+    # and an explicit market frequency to avoid pandas extension-dtype edge cases.
     ts_utc = pd.to_datetime(df["timestamp"], utc=True, errors="coerce")
     ts_naive = ts_utc.dt.tz_convert(None)
     target = pd.to_numeric(df["ret"], errors="coerce").astype("float64")
@@ -72,7 +74,42 @@ def chronos_predict_compat(df: pd.DataFrame, horizon: int):
     return med, q10, q90
 
 
-# Patch only the Chronos dataframe adapter; all risk, auth, cache, PatchTST and
-# TFT behavior stays in the original service.
+# Patch only the Chronos dataframe adapter; all auth, cache, PatchTST and TFT
+# behavior remains in the original service.
 core.chronos_predict = chronos_predict_compat
 app = core.app
+
+
+@app.get("/selftest-compat")
+def selftest_compat():
+    """One fixed XAUUSD M3 inference check without exposing internal secrets."""
+    token = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
+    if not token:
+        return {"ok": False, "error": "internal token unavailable"}
+
+    req = core.ForecastRequest(symbol="XAUUSD", timeframe="M3", candles=[], prediction_length=10)
+    started = time.perf_counter()
+    try:
+        data = core.forecast(req, token)
+        models = data.get("models") or {}
+        return {
+            "ok": True,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "status": data.get("status"),
+            "symbol": data.get("symbol"),
+            "timeframe": data.get("timeframe"),
+            "direction": data.get("direction"),
+            "direction_confidence": data.get("direction_confidence"),
+            "ensemble_weights": data.get("ensemble_weights"),
+            "chronos_status": (models.get("chronos2") or {}).get("status"),
+            "patchtst_status": (models.get("patchtst") or {}).get("status"),
+            "tft_status": (models.get("tft") or {}).get("status"),
+            "local_training": data.get("local_training"),
+            "quality_note": data.get("quality_note"),
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "latency_ms": round((time.perf_counter() - started) * 1000, 1),
+            "error": f"{type(exc).__name__}: {exc}"[:700],
+        }
