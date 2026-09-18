@@ -13,7 +13,7 @@ from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
 from ml.auto_train import TrainingManager
 
-VERSION="0.9.0"
+VERSION="0.9.1"
 agent=MarketAgent()
 shadow=ShadowService()
 coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
@@ -48,6 +48,15 @@ def status():
 @app.get("/api/coinbase/status")
 def coinbase_status():
     return coinbase.status()
+
+@app.get("/api/training/status")
+def training_status():
+    return trainer.status()
+
+@app.post("/api/training/btc/retrain")
+async def retrain_btc():
+    await trainer.start_btc(force=True)
+    return {"accepted":True,"status":trainer.status()["BTCUSD"]["status"]}
 
 @app.post("/api/coinbase/btc/sync")
 async def coinbase_sync():
@@ -84,6 +93,7 @@ def live_status():
             "timeframes":["M3","M5","M15"],
         },
         "coinbase":coinbase.status(),
+        "training":trainer.status(),
         "models":model_status,
         "buffer":payload,
         "last_signal":recent[-1] if recent else None,
@@ -132,7 +142,7 @@ def dashboard():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI Market Intelligence V0.8.1</title>
+<title>AI Market Intelligence V0.9.1</title>
 <style>
 :root{--bg:#080d1b;--panel:#11192b;--panel2:#172137;--text:#eef3ff;--muted:#8fa0bd;--line:#26324c;--green:#49e59a;--amber:#ffcb66;--red:#ff7184;--blue:#68a7ff}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#070b16,#0a1020);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -146,13 +156,40 @@ h1{font-size:28px;margin:0 0 6px}.sub{color:var(--muted)}.badge{display:inline-f
 .tf{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:13px}.tf div{background:#0c1426;border:1px solid var(--line);border-radius:10px;padding:10px}
 table{width:100%;border-collapse:collapse;margin-top:10px}th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--line);white-space:nowrap}th{color:var(--muted);font-weight:600;font-size:12px}
 .scroll{overflow:auto}.footer{color:var(--muted);font-size:12px;margin:18px 2px}.pill{padding:4px 8px;border-radius:999px;background:#0d1528;border:1px solid var(--line);font-size:12px}
-a{color:#8bb8ff;text-decoration:none}@media(max-width:900px){.span3,.span4,.span6{grid-column:span 12}.wrap{padding:14px}h1{font-size:23px}}
+a{color:#8bb8ff;text-decoration:none}
+.train-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:14px}
+.train-title{font-size:18px;font-weight:800;margin-top:3px}.train-actions{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.btn{border:1px solid var(--line);background:#0d1528;color:#dce9ff;border-radius:10px;padding:8px 11px;cursor:pointer;font-weight:700}
+.btn:hover{border-color:#4d8cff;box-shadow:0 0 0 1px rgba(77,140,255,.16),0 0 16px rgba(77,140,255,.12)}
+.train-progress-wrap{display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center;margin:4px 0 16px}
+.train-progress{height:14px;border:1px solid var(--line);border-radius:999px;overflow:hidden;background:#09111f;position:relative}
+.train-progress-fill{height:100%;width:0;border-radius:999px;background:linear-gradient(90deg,#4f8dff,#45d8ff,#49e59a);box-shadow:0 0 18px rgba(79,141,255,.35);transition:width .6s ease;position:relative}
+.train-progress-fill:after{content:"";position:absolute;top:0;bottom:0;width:30%;left:-35%;background:linear-gradient(90deg,transparent,rgba(255,255,255,.5),transparent);animation:trainSweep 1.6s linear infinite}
+.train-pct{font-weight:800;color:#b9d7ff;min-width:46px;text-align:right}
+.train-steps{display:grid;grid-template-columns:repeat(6,1fr);gap:10px;position:relative}
+.train-step{min-height:122px;padding:13px;border-radius:14px;border:1px solid var(--line);background:#0b1425;position:relative;overflow:hidden;transition:.3s ease}
+.train-step:before{content:"";position:absolute;inset:0;background:linear-gradient(110deg,transparent 25%,rgba(91,154,255,.06) 45%,transparent 65%);transform:translateX(-120%)}
+.train-step.active{border-color:#5d9dff;box-shadow:0 0 0 1px rgba(93,157,255,.2),0 0 24px rgba(54,121,255,.12);transform:translateY(-2px)}
+.train-step.active:before{animation:trainShimmer 1.7s linear infinite}
+.train-step.done{border-color:rgba(73,229,154,.55);background:linear-gradient(180deg,#0c1925,#0b1622)}
+.train-step.failed{border-color:rgba(255,113,132,.6);box-shadow:0 0 18px rgba(255,113,132,.12)}
+.train-step .step-no{width:31px;height:31px;border-radius:50%;display:grid;place-items:center;border:1px solid #35517b;background:#101d33;font-weight:800;margin-bottom:10px;color:#b8d4ff}
+.train-step.done .step-no{color:#07130e;background:var(--green);border-color:var(--green);box-shadow:0 0 16px rgba(73,229,154,.35)}
+.train-step.active .step-no{border-color:#66a7ff;box-shadow:0 0 16px rgba(102,167,255,.28);animation:trainPulse 1.4s ease-in-out infinite}
+.step-name{font-weight:800;font-size:13px;letter-spacing:.02em}.step-desc{color:var(--muted);font-size:11px;margin-top:5px;line-height:1.35}
+.train-flow{position:absolute;width:7px;height:7px;border-radius:50%;background:#65b6ff;box-shadow:0 0 14px #65b6ff;top:10px;right:10px;opacity:0}
+.train-step.active .train-flow{opacity:1;animation:trainOrbit 1.8s linear infinite}
+.train-meta{margin-top:14px;display:grid;grid-template-columns:repeat(5,1fr);gap:9px}
+.meta-box{background:#0b1425;border:1px solid var(--line);border-radius:11px;padding:10px}.meta-box .mv{margin-top:4px;font-weight:700;word-break:break-word}
+.ready-burst{display:none;align-items:center;gap:10px;margin-top:13px;padding:11px 12px;border:1px solid rgba(73,229,154,.35);border-radius:12px;background:rgba(73,229,154,.06)}
+.ready-burst.show{display:flex}.ready-check{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(73,229,154,.15);color:var(--green);font-weight:900;box-shadow:0 0 22px rgba(73,229,154,.22);animation:readyPulse 1.5s ease-in-out infinite}
+@keyframes trainSweep{to{left:110%}}@keyframes trainShimmer{to{transform:translateX(120%)}}@keyframes trainPulse{50%{transform:scale(1.08);box-shadow:0 0 22px rgba(102,167,255,.45)}}@keyframes trainOrbit{50%{transform:translate(-18px,18px)}100%{transform:translate(0,0)}}@keyframes readyPulse{50%{transform:scale(1.06)}}@media(max-width:1100px){.train-steps{grid-template-columns:repeat(3,1fr)}.train-meta{grid-template-columns:repeat(2,1fr)}}@media(max-width:900px){.span3,.span4,.span6{grid-column:span 12}.wrap{padding:14px}h1{font-size:23px}.train-steps{grid-template-columns:1fr}.train-meta{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="top">
-    <div><h1>AI Market Intelligence Agent V0.8.1</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
+    <div><h1>AI Market Intelligence Agent V0.9.1</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
     <div class="badge"><span class="dot"></span><span id="apiState">Checking API…</span></div>
   </div>
 
@@ -187,6 +224,48 @@ a{color:#8bb8ff;text-decoration:none}@media(max-width:900px){.span3,.span4,.span
     <div class="card span4"><div class="k">BTCUSD ML Model</div><div class="v" id="btcModel">—</div><div class="small">Background training uses Coinbase history with purged time splits.</div></div>
     <div class="card span4"><div class="k">Performance</div><div class="v warn">N/A</div><div class="small">Win rate / PF / DD require validated outcomes.</div></div>
 
+
+    <div class="card span12" id="btcTrainingCard">
+      <div class="train-head">
+        <div>
+          <div class="k">BTCUSD ML MODEL TRAINING</div>
+          <div class="train-title">Coinbase History → Feature Engineering → Regime → Ensemble → Validation → READY</div>
+          <div class="small" id="trainSub">Live backend training state. Animation reflects the actual training pipeline.</div>
+        </div>
+        <div class="train-actions">
+          <span class="pill" id="trainStatusPill">IDLE</span>
+          <button class="btn" id="replayTrainingBtn" type="button">Replay animation</button>
+        </div>
+      </div>
+
+      <div class="train-progress-wrap">
+        <div class="train-progress"><div class="train-progress-fill" id="trainProgressFill"></div></div>
+        <div class="train-pct" id="trainPct">0%</div>
+      </div>
+
+      <div class="train-steps">
+        <div class="train-step" id="step0" data-num="1"><div class="train-flow"></div><div class="step-no">1</div><div class="step-name">DOWNLOADING HISTORY</div><div class="step-desc">Fetching closed BTC-USD candles from Coinbase.</div></div>
+        <div class="train-step" id="step1" data-num="2"><div class="train-flow"></div><div class="step-no">2</div><div class="step-name">BUILDING DATASET</div><div class="step-desc">SMC features, MTF context, labels and purged splits.</div></div>
+        <div class="train-step" id="step2" data-num="3"><div class="train-flow"></div><div class="step-no">3</div><div class="step-name">TRAINING REGIME</div><div class="step-desc">Learning market regime clusters from training-only data.</div></div>
+        <div class="train-step" id="step3" data-num="4"><div class="train-flow"></div><div class="step-no">4</div><div class="step-name">TRAINING ENSEMBLE</div><div class="step-desc">LightGBM + XGBoost probability ensemble.</div></div>
+        <div class="train-step" id="step4" data-num="5"><div class="train-flow"></div><div class="step-no">5</div><div class="step-name">VALIDATING</div><div class="step-desc">Calibration, threshold sweep and held-out test.</div></div>
+        <div class="train-step" id="step5" data-num="6"><div class="train-flow"></div><div class="step-no">6</div><div class="step-name">READY v0.9</div><div class="step-desc">Validated artifact available for shadow inference.</div></div>
+      </div>
+
+      <div class="train-meta">
+        <div class="meta-box"><div class="k">STATUS</div><div class="mv" id="trainStatus">IDLE</div></div>
+        <div class="meta-box"><div class="k">VERSION</div><div class="mv" id="trainVersion">v0.9</div></div>
+        <div class="meta-box"><div class="k">DATASET ROWS</div><div class="mv" id="trainRows">0</div></div>
+        <div class="meta-box"><div class="k">STARTED UTC</div><div class="mv" id="trainStarted">—</div></div>
+        <div class="meta-box"><div class="k">FINISHED UTC</div><div class="mv" id="trainFinished">—</div></div>
+      </div>
+
+      <div class="ready-burst" id="readyBurst">
+        <div class="ready-check">✓</div>
+        <div><b>BTCUSD model is READY for shadow inference.</b><div class="small">The animation can be replayed without retraining the model.</div></div>
+      </div>
+    </div>
+
     <div class="card span12">
       <div class="k">Latest Shadow Signals</div>
       <div class="scroll"><table><thead><tr><th>Time</th><th>Symbol</th><th>Side</th><th>Probability</th><th>Expected R</th><th>Regime</th><th>Model</th><th>Qualified</th></tr></thead><tbody id="signalRows"><tr><td colspan="8" class="small">No model signals yet.</td></tr></tbody></table></div>
@@ -198,10 +277,67 @@ a{color:#8bb8ff;text-decoration:none}@media(max-width:900px){.span3,.span4,.span
       <div class="small">API docs: <a href="/docs">/docs</a> · Live status: <a href="/api/live/status">/api/live/status</a> · Coinbase status: <a href="/api/coinbase/status">/api/coinbase/status</a></div>
     </div>
   </div>
-  <div class="footer">V0.8.1 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
+  <div class="footer">V0.9.1 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
+
+const trainOrder=["DOWNLOADING_HISTORY","BUILDING_DATASET","TRAINING_REGIME","TRAINING_ENSEMBLE","VALIDATING","READY"];
+const trainPctMap={DOWNLOADING_HISTORY:10,BUILDING_DATASET:30,TRAINING_REGIME:50,TRAINING_ENSEMBLE:70,VALIDATING:90,READY:100};
+let trainReplay=false;
+let lastTraining=null;
+
+function fmtTime(v){return v?String(v).replace("T"," ").replace("Z","").slice(0,19):"—"}
+
+function drawTrainingState(status, meta={}, visualOnly=false){
+  const idx=trainOrder.indexOf(status);
+  const pct=trainPctMap[status] ?? (status==="FAILED"?0:0);
+  for(let i=0;i<6;i++){
+    const el=$("step"+i), no=el.querySelector(".step-no");
+    el.classList.remove("done","active","failed");
+    no.textContent=el.dataset.num;
+    if(status==="FAILED"){
+      if(i===Math.max(0,idx)) el.classList.add("failed");
+    }else if(idx>=0){
+      if(i<idx){el.classList.add("done");no.textContent="✓"}
+      else if(i===idx) el.classList.add(status==="READY"?"done":"active");
+      if(status==="READY" && i===idx) no.textContent="✓";
+    }
+  }
+  $("trainProgressFill").style.width=pct+"%";
+  $("trainPct").textContent=pct+"%";
+  $("trainStatusPill").textContent=status.replaceAll("_"," ");
+  $("trainStatus").textContent=status.replaceAll("_"," ");
+  $("readyBurst").classList.toggle("show",status==="READY");
+  if(!visualOnly){
+    $("trainVersion").textContent=meta.version||"v0.9";
+    $("trainRows").textContent=(meta.dataset_rows||0).toLocaleString();
+    $("trainStarted").textContent=fmtTime(meta.started_at);
+    $("trainFinished").textContent=fmtTime(meta.finished_at);
+    if(meta.error){
+      $("trainSub").textContent="Training error: "+meta.error;
+      $("trainSub").className="small bad";
+    }else{
+      $("trainSub").textContent="Live backend training state. Animation reflects the actual training pipeline.";
+      $("trainSub").className="small";
+    }
+  }
+}
+
+async function replayTraining(){
+  if(trainReplay)return;
+  trainReplay=true;
+  $("replayTrainingBtn").disabled=true;
+  $("trainSub").textContent="Replaying completed training pipeline — visualization only; model is not being retrained.";
+  $("trainSub").className="small warn";
+  for(const st of trainOrder){
+    drawTrainingState(st,lastTraining||{},true);
+    await new Promise(r=>setTimeout(r,620));
+  }
+  trainReplay=false;
+  $("replayTrainingBtn").disabled=false;
+  if(lastTraining)drawTrainingState(lastTraining.status||"IDLE",lastTraining,false);
+}
 function symbolData(data,name){return (data.buffer?.symbols||[]).find(x=>x.symbol===name)}
 function paintSymbol(prefix,s,waiting){
   if(!s)return;
@@ -234,6 +370,8 @@ async function refresh(){
     const xs=symbolData(d,"XAUUSD"); if(xs)$("xauReady").textContent=xs.ready?"MT5 buffer ready for inference.":"Need 300 closed candles per timeframe before inference.";
     modelText($("xauModel"),d.models?.XAUUSD);
     modelText($("btcModel"),d.models?.BTCUSD);
+    lastTraining=d.training?.BTCUSD||null;
+    if(lastTraining && !trainReplay)drawTrainingState(lastTraining.status||"IDLE",lastTraining,false);
   }catch(e){$("apiState").textContent="API ERROR"}
 
   try{
@@ -247,6 +385,7 @@ async function refresh(){
     }
   }catch(e){}
 }
+$("replayTrainingBtn").addEventListener("click",replayTraining);
 refresh();setInterval(refresh,5000);
 </script>
 </body></html>"""
