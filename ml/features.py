@@ -3,7 +3,10 @@ FEATURE_COLUMNS = [
     "liquidity_sweep","liquidity_sweep_direction","order_block","ob_direction",
     "fvg","fvg_direction","fvg_size","dealing_range_position","discount","premium",
     "session_asia","session_london","session_newyork","session_overlap",
-    "atr_norm","volatility_z","spread_atr","return_1","return_3","range_atr","hour_sin","hour_cos"
+    "atr_norm","volatility_z","spread_atr","return_1","return_3","range_atr","hour_sin","hour_cos",
+    "signal_direction","signal_mss","signal_bos","signal_sweep","signal_ob","signal_fvg",
+    "primary_structure_count","imbalance_count","smc_confluence","htf_alignment",
+    "distance_to_swing_atr","stop_distance_atr"
 ]
 
 def build_features(row):
