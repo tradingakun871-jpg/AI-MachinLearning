@@ -24,5 +24,5 @@ class ShadowService:
     def status(self,symbols=("XAUUSD","BTCUSD","BTCUSDT")):
         return {
             "symbols":[self.buffer.summary(symbol) for symbol in symbols],
-            "shadow_signal_count":len(self.inference.journal.rows),
+            "shadow_signal_count":self.inference.journal.count(),
         }
