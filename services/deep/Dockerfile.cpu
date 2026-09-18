@@ -15,4 +15,4 @@ COPY . /app
 RUN mkdir -p /app/artifacts/deep
 
 EXPOSE 8000
-CMD ["sh", "-c", "uvicorn persistent_compat_app:app --host 0.0.0.0 --port ${PORT:-8000}"]
+CMD ["sh", "-c", "uvicorn db_persistent_compat_app:app --host 0.0.0.0 --port ${PORT:-8000}"]
