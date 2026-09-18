@@ -10,6 +10,11 @@ def _base_url(name: str) -> str:
     return os.getenv(name, "").strip().rstrip("/")
 
 
+def _internal_headers() -> dict[str, str]:
+    token = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
+    return {"X-Internal-Token": token} if token else {}
+
+
 async def _get_json(url: str, timeout: float = 20.0) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=timeout) as client:
         r = await client.get(url)
@@ -19,7 +24,7 @@ async def _get_json(url: str, timeout: float = 20.0) -> dict[str, Any]:
 
 async def _post_json(url: str, payload: dict[str, Any] | None = None, timeout: float = 90.0) -> dict[str, Any]:
     async with httpx.AsyncClient(timeout=timeout) as client:
-        r = await client.post(url, json=payload or {})
+        r = await client.post(url, json=payload or {}, headers=_internal_headers())
         r.raise_for_status()
         return r.json()
 
@@ -154,9 +159,8 @@ async def specialist_health() -> dict[str, Any]:
     async def check(name: str, base: str):
         if not base:
             return name, {"configured": False, "reachable": False, "status": "NOT_CONFIGURED"}
-        path = "/health" if name != "machine_learning" else "/health"
         try:
-            data = await _get_json(f"{base}{path}", timeout=12.0)
+            data = await _get_json(f"{base}/health", timeout=12.0)
             return name, {"configured": True, "reachable": True, "status": "ONLINE", "details": data}
         except Exception as exc:
             return name, {"configured": True, "reachable": False, "status": "ERROR", "error": f"{type(exc).__name__}: {exc}"}
@@ -204,7 +208,6 @@ async def build_evidence(payload: dict[str, Any]) -> dict[str, Any]:
     candles = candles[-500:]
     event = payload.get("event") if isinstance(payload.get("event"), dict) else None
 
-    # Same captured request context; independent specialists run concurrently to reduce latency.
     ml, nlp, dl = await asyncio.gather(
         market_intelligence(symbol),
         nlp_sentiment(symbol, news, event),
@@ -212,7 +215,7 @@ async def build_evidence(payload: dict[str, Any]) -> dict[str, Any]:
     )
 
     return {
-        "evidence_version": "1.1",
+        "evidence_version": "1.2",
         "symbol": symbol,
         "timeframe": timeframe,
         "captured_at": datetime.now(timezone.utc).isoformat(),
