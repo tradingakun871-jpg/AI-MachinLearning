@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime,timezone
@@ -9,11 +10,12 @@ from fastapi.responses import HTMLResponse
 from app.schemas import AnalysisRequest,AnalysisResponse
 from app.engine import MarketAgent
 from app.security import verify_bridge_token
+from app.database import database_health, init_database, market_history_status, upsert_market_candles
 from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
 from ml.auto_train import TrainingManager
 
-VERSION="0.9.2"
+VERSION="0.10.0"
 agent=MarketAgent()
 shadow=ShadowService()
 coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
@@ -21,11 +23,18 @@ trainer=TrainingManager(shadow,version="v0.9")
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
+    try:
+        init_database()
+    except Exception:
+        pass
     await coinbase.start()
     await trainer.start_btc(force=False)
+    await trainer.start_xau(force=False)
     yield
     if trainer.task and not trainer.task.done():
         trainer.task.cancel()
+    if trainer.xau_task and not trainer.xau_task.done():
+        trainer.xau_task.cancel()
     await coinbase.stop()
 
 app=FastAPI(title="AI Market Intelligence Agent",version=VERSION,lifespan=lifespan)
@@ -49,6 +58,14 @@ def status():
 def coinbase_status():
     return coinbase.status()
 
+@app.get("/api/database/status")
+def db_status():
+    return database_health()
+
+@app.get("/api/history/status")
+def history_status():
+    return {"XAUUSD":market_history_status("XAUUSD")}
+
 @app.get("/api/training/status")
 def training_status():
     return trainer.status()
@@ -57,6 +74,11 @@ def training_status():
 async def retrain_btc():
     await trainer.start_btc(force=True)
     return {"accepted":True,"status":trainer.status()["BTCUSD"]["status"]}
+
+@app.post("/api/training/xau/start")
+async def train_xau():
+    await trainer.start_xau(force=False)
+    return {"accepted":True,"status":trainer.status()["XAUUSD"]["status"],"history":market_history_status("XAUUSD")}
 
 @app.post("/api/coinbase/btc/sync")
 async def coinbase_sync():
@@ -93,17 +115,17 @@ def live_status():
             "timeframes":["M3","M5","M15"],
         },
         "coinbase":coinbase.status(),
+        "database":database_health(),
+        "history":{"XAUUSD":market_history_status("XAUUSD")},
         "training":trainer.status(),
         "models":model_status,
         "buffer":payload,
         "last_signal":recent[-1] if recent else None,
         "server_time":datetime.now(timezone.utc).isoformat(),
         "performance":{
-            "win_rate":None,
-            "profit_factor":None,
-            "max_drawdown_r":None,
-            "net_r":None,
-            "state":"WAITING_FOR_VALIDATED_OUTCOMES",
+            "BTCUSD":((trainer.status().get("BTCUSD",{}).get("metrics") or {}).get("trading")),
+            "XAUUSD":((trainer.status().get("XAUUSD",{}).get("metrics") or {}).get("trading")),
+            "state":"MODEL_TEST_METRICS_ONLY_NOT_LIVE_OUTCOMES",
         },
     }
 
@@ -114,6 +136,29 @@ def analyze(req:AnalysisRequest):
 @app.post("/api/market/candle")
 def candle(payload:dict):
     return agent.ingest(payload)
+
+@app.post("/api/history/batch",dependencies=[Depends(verify_bridge_token)])
+async def history_batch(payload:dict):
+    if str(payload.get("symbol","")).upper()!="XAUUSD":
+        raise HTTPException(422,"historical backfill currently supports XAUUSD only")
+    timeframe=str(payload.get("timeframe","")).upper()
+    if timeframe not in ("M3","M5","M15"):
+        raise HTTPException(422,"timeframe must be M3, M5 or M15")
+    candles=payload.get("candles")
+    if not isinstance(candles,list) or not candles:
+        raise HTTPException(422,"candles must be a non-empty list")
+    if len(candles)>500:
+        raise HTTPException(422,"maximum 500 candles per batch")
+    required=("timestamp","open","high","low","close")
+    for i,candle in enumerate(candles):
+        if not isinstance(candle,dict) or any(k not in candle for k in required):
+            raise HTTPException(422,f"invalid candle at index {i}")
+    try:
+        stored=await asyncio.to_thread(upsert_market_candles,"XAUUSD",timeframe,candles)
+    except Exception as exc:
+        raise HTTPException(500,f"history persistence failed: {exc}")
+    await trainer.start_xau(force=False)
+    return {"accepted":True,"stored":stored,"timeframe":timeframe,"history":market_history_status("XAUUSD")}
 
 @app.post("/api/live/candle",dependencies=[Depends(verify_bridge_token)])
 def live_candle(payload:dict):
@@ -142,7 +187,7 @@ def dashboard():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI Market Intelligence V0.9.2</title>
+<title>AI Market Intelligence V0.10.0</title>
 <style>
 :root{--bg:#080d1b;--panel:#11192b;--panel2:#172137;--text:#eef3ff;--muted:#8fa0bd;--line:#26324c;--green:#49e59a;--amber:#ffcb66;--red:#ff7184;--blue:#68a7ff}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#070b16,#0a1020);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -224,7 +269,7 @@ a{color:#8bb8ff;text-decoration:none}
 <body>
 <div class="wrap">
   <div class="top">
-    <div><h1>AI Market Intelligence Agent V0.9.2</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
+    <div><h1>AI Market Intelligence Agent V0.10.0</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
     <div class="badge"><span class="dot"></span><span id="apiState">Checking API…</span></div>
   </div>
 
@@ -408,7 +453,7 @@ a{color:#8bb8ff;text-decoration:none}
       <div class="small" style="margin-top:11px">API docs: <a href="/docs">/docs</a> · Live status: <a href="/api/live/status">/api/live/status</a> · Training status: <a href="/api/training/status">/api/training/status</a></div>
     </div>
   </div>
-  <div class="footer">V0.9.2 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
+  <div class="footer">V0.10.0 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
