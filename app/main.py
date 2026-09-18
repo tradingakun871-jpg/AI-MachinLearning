@@ -12,10 +12,10 @@ from app.security import verify_bridge_token
 from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
 
-VERSION="0.8.1"
+VERSION="0.9.0"
 agent=MarketAgent()
 shadow=ShadowService()
-coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
+coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))\ntrainer=TrainingManager(shadow,version="v0.9")
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
@@ -29,7 +29,7 @@ def bridge_configured():
     token=os.getenv("BRIDGE_TOKEN","")
     return bool(token and token!="change-me")
 
-def model_available(symbol,version="v0.5"):
+def model_available(symbol,version="v0.9"):
     return Path("artifacts/models")/symbol.upper()/version/"model.joblib"
 
 @app.get("/health")
@@ -59,7 +59,7 @@ def live_status():
         path=model_available(symbol)
         model_status[symbol]={
             "available":path.exists(),
-            "version":"v0.5" if path.exists() else None,
+            "version":"v0.9" if path.exists() else None,
             "state":"READY" if path.exists() else "MODEL_NOT_AVAILABLE",
         }
     recent=shadow.recent(1)
@@ -179,7 +179,7 @@ a{color:#8bb8ff;text-decoration:none}@media(max-width:900px){.span3,.span4,.span
     </div>
 
     <div class="card span4"><div class="k">XAUUSD ML Model</div><div class="v" id="xauModel">—</div><div class="small">LightGBM/XGBoost ensemble artifact.</div></div>
-    <div class="card span4"><div class="k">BTCUSD ML Model</div><div class="v" id="btcModel">—</div><div class="small">Coinbase data does not fabricate an ML model.</div></div>
+    <div class="card span4"><div class="k">BTCUSD ML Model</div><div class="v" id="btcModel">—</div><div class="small">Background training uses Coinbase history with purged time splits.</div></div>
     <div class="card span4"><div class="k">Performance</div><div class="v warn">N/A</div><div class="small">Win rate / PF / DD require validated outcomes.</div></div>
 
     <div class="card span12">
