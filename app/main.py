@@ -11,16 +11,21 @@ from app.engine import MarketAgent
 from app.security import verify_bridge_token
 from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
+from ml.auto_train import TrainingManager
 
 VERSION="0.9.0"
 agent=MarketAgent()
 shadow=ShadowService()
-coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))\ntrainer=TrainingManager(shadow,version="v0.9")
+coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
+trainer=TrainingManager(shadow,version="v0.9")
 
 @asynccontextmanager
 async def lifespan(app:FastAPI):
     await coinbase.start()
+    await trainer.start_btc(force=False)
     yield
+    if trainer.task and not trainer.task.done():
+        trainer.task.cancel()
     await coinbase.stop()
 
 app=FastAPI(title="AI Market Intelligence Agent",version=VERSION,lifespan=lifespan)
