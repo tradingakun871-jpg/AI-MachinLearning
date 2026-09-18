@@ -81,7 +81,8 @@ def model_quality():
             "threshold_policy":((trainer.status().get(symbol,{}).get("metrics") or {}).get("threshold_policy")),
             "side_models":((trainer.status().get(symbol,{}).get("metrics") or {}).get("side_models")),
             "probability_diagnostics":((trainer.status().get(symbol,{}).get("metrics") or {}).get("probability_diagnostics")),
-            "temporal_stability":((trainer.status().get(symbol,{}).get("metrics") or {}).get("temporal_stability")),\n            "hybrid_algorithms":((trainer.status().get(symbol,{}).get("metrics") or {}).get("hybrid_algorithms")),
+            "temporal_stability":((trainer.status().get(symbol,{}).get("metrics") or {}).get("temporal_stability")),
+            "hybrid_algorithms":((trainer.status().get(symbol,{}).get("metrics") or {}).get("hybrid_algorithms")),
         }
         for symbol in ("XAUUSD","BTCUSD")
     }
@@ -437,8 +438,8 @@ a{color:#8bb8ff;text-decoration:none}
           <div class="pipe-stage" id="pipeModel">
             <div>
               <div class="stage-icon">ML</div>
-              <div class="stage-name">LIGHTGBM + XGBOOST</div>
-              <div class="stage-sub">Calibrated ensemble probability for TP-before-SL outcomes.</div>
+              <div class="stage-name">HYBRID ML + RL</div>
+              <div class="stage-sub">LightGBM · XGBoost · Linear Regression · Offline Q-Learning.</div>
               <div class="stage-bars"><i></i><i></i><i></i><i></i><i></i></div>
             </div>
             <div class="stage-state"><span class="stage-led"></span><span id="pipeModelState">CHECKING MODEL</span></div>
@@ -494,7 +495,8 @@ function fmtTime(v){return v?String(v).replace("T"," ").replace("Z","").slice(0,
 function drawTrainingState(status, meta={}, visualOnly=false){
   const visualMap={
     TEMPORAL_WALK_FORWARD:"TRAINING_REGIME",
-    FEATURE_PRUNING:"TRAINING_ENSEMBLE",\n    TRAINING_LINEAR_RL:"TRAINING_ENSEMBLE",
+    FEATURE_PRUNING:"TRAINING_ENSEMBLE",
+    TRAINING_LINEAR_RL:"TRAINING_ENSEMBLE",
     TRAINING_SIDE_MODELS:"TRAINING_ENSEMBLE",
     LEARNING_CONTEXT_POLICY:"VALIDATING",
     VALIDATING_QUALITY:"VALIDATING"
