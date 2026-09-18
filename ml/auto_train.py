@@ -20,7 +20,8 @@ from ml.quality import (
     quality_gate_from_selection,
     select_features_by_importance,
 )
-from ml.regime import RegimeClassifier\nfrom ml.stability import evaluate_temporal_stability
+from ml.regime import RegimeClassifier
+from ml.stability import evaluate_temporal_stability
 
 
 class TrainingManager:
