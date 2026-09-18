@@ -20,13 +20,13 @@ from ml.quality import (
     quality_gate_from_selection,
     select_features_by_importance,
 )
-from ml.regime import RegimeClassifier
+from ml.regime import RegimeClassifier\nfrom ml.stability import evaluate_temporal_stability
 
 
 class TrainingManager:
-    """V0.11.2 side-specific learning, feature pruning and joint-context validation."""
+    """V0.11.3 side-specific learning with temporal stability and robust calibration."""
 
-    def __init__(self, shadow_service, version="v0.11.2"):
+    def __init__(self, shadow_service, version="v0.11.3"):
         self.shadow = shadow_service
         self.version = version
         self.registry = ModelRegistry()
@@ -88,7 +88,7 @@ class TrainingManager:
         if self.task and not self.task.done():
             return
         self.task = asyncio.create_task(
-            self._train_btc(), name="btc-model-training-v0112"
+            self._train_btc(), name="btc-model-training-v0113"
         )
 
     async def start_xau(self, force=False):
@@ -117,7 +117,7 @@ class TrainingManager:
             return
 
         self.xau_task = asyncio.create_task(
-            self._train_xau(), name="xau-model-training-v0112"
+            self._train_xau(), name="xau-model-training-v0113"
         )
 
     @staticmethod
@@ -245,6 +245,21 @@ class TrainingManager:
             )
         if any(len(np.unique(frame["label"])) < 2 for frame in (train, cal, test)):
             raise RuntimeError("train/cal/test must each contain wins and losses")
+
+        development = dataset.iloc[:test_pos].copy()
+        development = development[
+            development["source_index"] < test_source - horizon
+        ].copy()
+
+        self._update(symbol, status="TEMPORAL_WALK_FORWARD")
+        temporal_stability = await asyncio.to_thread(
+            evaluate_temporal_stability,
+            development,
+            FEATURE_COLUMNS,
+            rr,
+            horizon,
+            3,
+        )
 
         self._update(symbol, status="TRAINING_REGIME")
         regime = await asyncio.to_thread(RegimeClassifier().fit, train)
@@ -376,7 +391,7 @@ class TrainingManager:
                 timeout=30.0,
                 headers={
                     "Accept": "application/json",
-                    "User-Agent": "AI-Market-Intelligence-Trainer/0.11.2",
+                    "User-Agent": "AI-Market-Intelligence-Trainer/0.11.3",
                 },
             ) as client:
                 m1 = await feed._fetch_candles(client, 60, days * 24 * 60)
