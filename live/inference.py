@@ -13,7 +13,7 @@ class LiveInference:
         self.loader=LiveModelLoader()
         self.journal=ShadowJournal()
 
-    def analyze(self,symbol,m3,m5,m15,version="v0.9"):
+    def analyze(self,symbol,m3,m5,m15,version="v0.10"):
         bundle=self.loader.load(symbol,version)
         if bundle is None:
             return {"status":"MODEL_NOT_AVAILABLE","symbol":symbol,"mode":"RESEARCH","model_version":version}
