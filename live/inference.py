@@ -5,16 +5,64 @@ from smc.engine import add_smc_features
 from live.model_loader import LiveModelLoader
 from live.shadow import ShadowJournal
 
+
 class LiveInference:
-    def __init__(self,threshold=.60,rr=3.0): self.threshold=threshold; self.rr=rr; self.loader=LiveModelLoader(); self.journal=ShadowJournal()
-    def analyze(self,symbol,m3,m5,m15,version="v0.5"):
+    def __init__(self,threshold=.60,rr=3.0):
+        self.threshold=threshold
+        self.rr=rr
+        self.loader=LiveModelLoader()
+        self.journal=ShadowJournal()
+
+    def analyze(self,symbol,m3,m5,m15,version="v0.9"):
         bundle=self.loader.load(symbol,version)
-        if bundle is None: return {"status":"MODEL_NOT_AVAILABLE","symbol":symbol,"mode":"RESEARCH"}
-        d=add_smc_features(add_market_features(m3)); d=attach_htf_context(d,m5,m15); d["trend_m3"]=d.structure_bias
-        row=d.tail(1).copy(); row["regime"]=bundle["regime"].predict(row); features=bundle["features"]
+        if bundle is None:
+            return {"status":"MODEL_NOT_AVAILABLE","symbol":symbol,"mode":"RESEARCH","model_version":version}
+
+        d=add_smc_features(add_market_features(m3))
+        d=attach_htf_context(d,m5,m15)
+        d["trend_m3"]=d.structure_bias
+        row=d.tail(1).copy()
+
+        row["regime"]=bundle["regime"].predict(row)
+        features=bundle["features"]
         missing=[c for c in features if c not in row]
-        if missing: return {"status":"FEATURE_MISMATCH","missing":missing,"symbol":symbol,"mode":"RESEARCH"}
-        p=float(bundle["model"].predict_proba(row[features])[0]); expected_r=p*self.rr-(1-p); direction=int(row.mss.iloc[0]); side="BUY" if direction>0 else "SELL" if direction<0 else "WAIT"
-        qualified=side!="WAIT" and p>=self.threshold and expected_r>0
-        event={"status":"OK","symbol":symbol,"timestamp":str(row.timestamp.iloc[0]),"side":side,"probability":round(p,4),"expected_r":round(expected_r,4),"regime":int(row.regime.iloc[0]),"qualified":bool(qualified),"mode":"SHADOW_RESEARCH","model_version":version}
-        self.journal.record(event); return event
+        if missing:
+            return {"status":"FEATURE_MISMATCH","missing":missing,"symbol":symbol,"mode":"RESEARCH","model_version":version}
+
+        p=float(bundle["model"].predict_proba(row[features])[0])
+        rr=float(bundle.get("rr",self.rr))
+        threshold=float(bundle.get("threshold",self.threshold))
+        expected_r=p*rr-(1-p)
+
+        values=[
+            int(row.mss.iloc[0]) if "mss" in row else 0,
+            int(row.bos.iloc[0]) if "bos" in row else 0,
+            int(row.liquidity_sweep_direction.iloc[0]) if "liquidity_sweep_direction" in row else 0,
+            int(row.structure_bias.iloc[0]) if "structure_bias" in row else 0,
+        ]
+        direction=next((v for v in values if v!=0),0)
+        side="BUY" if direction>0 else "SELL" if direction<0 else "WAIT"
+        event=any([
+            int(row.get("mss",pd.Series([0])).iloc[0])!=0,
+            int(row.get("bos",pd.Series([0])).iloc[0])!=0,
+            int(row.get("liquidity_sweep",pd.Series([0])).iloc[0])!=0,
+            int(row.get("order_block",pd.Series([0])).iloc[0])!=0,
+            int(row.get("fvg",pd.Series([0])).iloc[0])!=0,
+        ])
+        qualified=side!="WAIT" and event and p>=threshold and expected_r>0
+
+        event_row={
+            "status":"OK",
+            "symbol":symbol,
+            "timestamp":str(row.timestamp.iloc[0]),
+            "side":side,
+            "probability":round(p,4),
+            "expected_r":round(expected_r,4),
+            "regime":int(row.regime.iloc[0]),
+            "threshold":round(threshold,4),
+            "qualified":bool(qualified),
+            "mode":"SHADOW_RESEARCH",
+            "model_version":version,
+        }
+        self.journal.record(event_row)
+        return event_row
