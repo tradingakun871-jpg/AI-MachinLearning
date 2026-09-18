@@ -13,7 +13,7 @@ from live.service import ShadowService
 from data.coinbase import CoinbaseBTCFeed
 from ml.auto_train import TrainingManager
 
-VERSION="0.9.1"
+VERSION="0.9.2"
 agent=MarketAgent()
 shadow=ShadowService()
 coinbase=CoinbaseBTCFeed(shadow,poll_seconds=int(os.getenv("COINBASE_POLL_SECONDS","60")))
@@ -142,7 +142,7 @@ def dashboard():
 <head>
 <meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>AI Market Intelligence V0.9.1</title>
+<title>AI Market Intelligence V0.9.2</title>
 <style>
 :root{--bg:#080d1b;--panel:#11192b;--panel2:#172137;--text:#eef3ff;--muted:#8fa0bd;--line:#26324c;--green:#49e59a;--amber:#ffcb66;--red:#ff7184;--blue:#68a7ff}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#070b16,#0a1020);color:var(--text);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
@@ -183,13 +183,48 @@ a{color:#8bb8ff;text-decoration:none}
 .meta-box{background:#0b1425;border:1px solid var(--line);border-radius:11px;padding:10px}.meta-box .mv{margin-top:4px;font-weight:700;word-break:break-word}
 .ready-burst{display:none;align-items:center;gap:10px;margin-top:13px;padding:11px 12px;border:1px solid rgba(73,229,154,.35);border-radius:12px;background:rgba(73,229,154,.06)}
 .ready-burst.show{display:flex}.ready-check{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;background:rgba(73,229,154,.15);color:var(--green);font-weight:900;box-shadow:0 0 22px rgba(73,229,154,.22);animation:readyPulse 1.5s ease-in-out infinite}
+
+.pipeline-board{margin-top:14px;position:relative;padding:14px;border:1px solid rgba(104,167,255,.16);border-radius:16px;background:radial-gradient(circle at 50% 0%,rgba(68,123,255,.08),transparent 38%),#0a1222;overflow:hidden}
+.pipeline-grid{display:grid;grid-template-columns:1.25fr .9fr 1.15fr .85fr 1.15fr .85fr 1fr;gap:12px;align-items:stretch;position:relative;z-index:2}
+.pipe-stage{min-height:148px;border:1px solid var(--line);background:linear-gradient(180deg,#0f1a2d,#0a1323);border-radius:15px;padding:14px;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between}
+.pipe-stage:after{content:"";position:absolute;inset:-40%;background:radial-gradient(circle,rgba(92,160,255,.09),transparent 32%);transform:translateX(-45%);animation:pipeGlow 5.8s ease-in-out infinite}
+.pipe-stage.ready{border-color:rgba(73,229,154,.42);box-shadow:0 0 18px rgba(73,229,154,.08)}
+.pipe-stage.wait{border-color:rgba(255,203,102,.38)}
+.pipe-stage .stage-icon{width:39px;height:39px;border-radius:12px;display:grid;place-items:center;background:#101e35;border:1px solid #31517a;font-size:18px;box-shadow:inset 0 0 14px rgba(92,160,255,.08)}
+.pipe-stage.ready .stage-icon{border-color:rgba(73,229,154,.5);box-shadow:0 0 14px rgba(73,229,154,.12)}
+.stage-name{font-size:13px;font-weight:850;letter-spacing:.025em;margin-top:10px}
+.stage-sub{font-size:11px;color:var(--muted);line-height:1.35;margin-top:5px}
+.stage-state{font-size:10px;display:inline-flex;align-items:center;gap:6px;margin-top:9px;color:#b7c8e3}
+.stage-led{width:7px;height:7px;border-radius:50%;background:var(--blue);box-shadow:0 0 12px var(--blue);animation:ledPulse 1.35s ease-in-out infinite}
+.pipe-stage.ready .stage-led{background:var(--green);box-shadow:0 0 12px var(--green)}
+.pipe-stage.wait .stage-led{background:var(--amber);box-shadow:0 0 12px var(--amber)}
+.pipe-link{position:absolute;top:50%;height:2px;background:linear-gradient(90deg,rgba(65,135,255,.08),rgba(87,174,255,.65),rgba(65,135,255,.08));z-index:1;overflow:visible}
+.pipe-link:before,.pipe-link:after{content:"";position:absolute;top:50%;width:8px;height:8px;border-radius:50%;background:#66b4ff;box-shadow:0 0 16px #66b4ff;transform:translate(-50%,-50%);animation:pipeParticle 2.15s linear infinite}
+.pipe-link:after{animation-delay:1.05s}
+.pl1{left:15.2%;width:4.3%}.pl2{left:27.9%;width:4.3%}.pl3{left:44.1%;width:4.3%}.pl4{left:56.6%;width:4.3%}.pl5{left:72.6%;width:4.3%}.pl6{left:85%;width:4.3%}
+.pipeline-streams{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin-top:9px}
+.source-chip{font-size:10px;padding:6px 7px;border:1px solid var(--line);border-radius:9px;background:#0a1425;display:flex;align-items:center;gap:6px}
+.source-chip .mini-led{width:6px;height:6px;border-radius:50%;background:var(--amber);box-shadow:0 0 9px var(--amber)}
+.source-chip.live .mini-led{background:var(--green);box-shadow:0 0 9px var(--green)}
+.stage-bars{display:flex;align-items:flex-end;gap:4px;height:28px;margin-top:8px}.stage-bars i{display:block;width:5px;border-radius:4px;background:linear-gradient(180deg,#6ec5ff,#4f7dff);animation:barDance 1.4s ease-in-out infinite}.stage-bars i:nth-child(1){height:35%}.stage-bars i:nth-child(2){height:72%;animation-delay:.2s}.stage-bars i:nth-child(3){height:48%;animation-delay:.4s}.stage-bars i:nth-child(4){height:90%;animation-delay:.6s}.stage-bars i:nth-child(5){height:60%;animation-delay:.8s}
+.signal-orb{width:47px;height:47px;border-radius:50%;border:2px solid rgba(73,229,154,.55);display:grid;place-items:center;margin-top:8px;box-shadow:0 0 22px rgba(73,229,154,.18),inset 0 0 18px rgba(73,229,154,.08);animation:orbPulse 1.7s ease-in-out infinite}
+.pipeline-legend{display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;margin-top:12px;position:relative;z-index:2}
+.pipe-live{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.pipe-live span{font-size:11px;color:var(--muted)}
+.flow-caption{font-size:11px;color:#7892b9;letter-spacing:.08em;text-transform:uppercase}
+@keyframes pipeParticle{0%{left:0;opacity:0;transform:translate(-50%,-50%) scale(.5)}10%{opacity:1}90%{opacity:1}100%{left:100%;opacity:0;transform:translate(-50%,-50%) scale(1.2)}}
+@keyframes pipeGlow{0%,100%{transform:translateX(-45%)}50%{transform:translateX(45%)}}
+@keyframes ledPulse{50%{opacity:.35;transform:scale(.82)}}
+@keyframes barDance{50%{transform:scaleY(.55);opacity:.65}}
+@keyframes orbPulse{50%{transform:scale(1.07);box-shadow:0 0 32px rgba(73,229,154,.28),inset 0 0 24px rgba(73,229,154,.12)}}
+@media(max-width:1100px){.pipeline-grid{grid-template-columns:repeat(2,1fr)}.pipe-link{display:none}}
+@media(max-width:700px){.pipeline-grid{grid-template-columns:1fr}}
 @keyframes trainSweep{to{left:110%}}@keyframes trainShimmer{to{transform:translateX(120%)}}@keyframes trainPulse{50%{transform:scale(1.08);box-shadow:0 0 22px rgba(102,167,255,.45)}}@keyframes trainOrbit{50%{transform:translate(-18px,18px)}100%{transform:translate(0,0)}}@keyframes readyPulse{50%{transform:scale(1.06)}}@media(max-width:1100px){.train-steps{grid-template-columns:repeat(3,1fr)}.train-meta{grid-template-columns:repeat(2,1fr)}}@media(max-width:900px){.span3,.span4,.span6{grid-column:span 12}.wrap{padding:14px}h1{font-size:23px}.train-steps{grid-template-columns:1fr}.train-meta{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="wrap">
   <div class="top">
-    <div><h1>AI Market Intelligence Agent V0.9.1</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
+    <div><h1>AI Market Intelligence Agent V0.9.2</h1><div class="sub">XAUUSD: MT5 · BTCUSD: Coinbase BTC-USD · SMC · ML inference · Shadow journal</div></div>
     <div class="badge"><span class="dot"></span><span id="apiState">Checking API…</span></div>
   </div>
 
@@ -272,12 +307,108 @@ a{color:#8bb8ff;text-decoration:none}
     </div>
 
     <div class="card span12">
-      <div class="k">Pipeline Status</div>
-      <p><span class="pill">XAU: MT5</span> + <span class="pill">BTC: Coinbase</span> → <span class="pill">M3/M5/M15</span> → <span class="pill">SMC BOS/CHOCH/MSS + OB/FVG</span> → <span class="pill">Regime</span> → <span class="pill">LightGBM/XGBoost</span> → <span class="pill">Expected R</span> → <span class="pill">Shadow Journal</span></p>
-      <div class="small">API docs: <a href="/docs">/docs</a> · Live status: <a href="/api/live/status">/api/live/status</a> · Coinbase status: <a href="/api/coinbase/status">/api/coinbase/status</a></div>
+      <div class="train-head">
+        <div>
+          <div class="k">PIPELINE STATUS</div>
+          <div class="train-title">Continuous Live Intelligence Flow</div>
+          <div class="small">Animated continuously to show how market data moves through the research pipeline.</div>
+        </div>
+        <div class="badge"><span class="dot"></span><span>PIPELINE RUNNING</span></div>
+      </div>
+
+      <div class="pipeline-board">
+        <div class="pipe-link pl1"></div><div class="pipe-link pl2"></div><div class="pipe-link pl3"></div>
+        <div class="pipe-link pl4"></div><div class="pipe-link pl5"></div><div class="pipe-link pl6"></div>
+
+        <div class="pipeline-grid">
+          <div class="pipe-stage" id="pipeSources">
+            <div>
+              <div class="stage-icon">⇩</div>
+              <div class="stage-name">MARKET DATA</div>
+              <div class="stage-sub">Two independent live sources feed the research engine.</div>
+              <div class="pipeline-streams">
+                <div class="source-chip" id="pipeXauSource"><span class="mini-led"></span>XAU · MT5</div>
+                <div class="source-chip" id="pipeBtcSource"><span class="mini-led"></span>BTC · Coinbase</div>
+              </div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span><span id="pipeSourceState">INGESTING</span></div>
+          </div>
+
+          <div class="pipe-stage ready">
+            <div>
+              <div class="stage-icon">▥</div>
+              <div class="stage-name">M3 / M5 / M15</div>
+              <div class="stage-sub">Closed-candle alignment and multi-timeframe context.</div>
+              <div class="stage-bars"><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span>ALIGNMENT ACTIVE</div>
+          </div>
+
+          <div class="pipe-stage ready">
+            <div>
+              <div class="stage-icon">⌁</div>
+              <div class="stage-name">SMC FEATURE ENGINE</div>
+              <div class="stage-sub">BOS · CHOCH · MSS · liquidity sweep · OB · FVG.</div>
+              <div class="stage-bars"><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span>FEATURES STREAMING</div>
+          </div>
+
+          <div class="pipe-stage ready">
+            <div>
+              <div class="stage-icon">◈</div>
+              <div class="stage-name">REGIME</div>
+              <div class="stage-sub">Market state classifier transforms structure into regime context.</div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span>CLASSIFYING</div>
+          </div>
+
+          <div class="pipe-stage" id="pipeModel">
+            <div>
+              <div class="stage-icon">ML</div>
+              <div class="stage-name">LIGHTGBM + XGBOOST</div>
+              <div class="stage-sub">Calibrated ensemble probability for TP-before-SL outcomes.</div>
+              <div class="stage-bars"><i></i><i></i><i></i><i></i><i></i></div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span><span id="pipeModelState">CHECKING MODEL</span></div>
+          </div>
+
+          <div class="pipe-stage ready">
+            <div>
+              <div class="stage-icon">R</div>
+              <div class="stage-name">EXPECTED R</div>
+              <div class="stage-sub">Probability × reward/risk converted into expected return.</div>
+              <div class="signal-orb">R</div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span>SCORING</div>
+          </div>
+
+          <div class="pipe-stage ready">
+            <div>
+              <div class="stage-icon">✓</div>
+              <div class="stage-name">SHADOW JOURNAL</div>
+              <div class="stage-sub">Qualified research signals are recorded without broker execution.</div>
+              <div class="signal-orb">✓</div>
+            </div>
+            <div class="stage-state"><span class="stage-led"></span><span id="pipeSignalState">MONITORING</span></div>
+          </div>
+        </div>
+
+        <div class="pipeline-legend">
+          <div class="pipe-live">
+            <span id="pipeBtcInfo">BTC Coinbase: checking…</span>
+            <span id="pipeXauInfo">XAU MT5: checking…</span>
+            <span id="pipeModelInfo">Model: checking…</span>
+            <span id="pipeSignalInfo">Shadow signals: 0</span>
+          </div>
+          <div class="flow-caption">Market Data → Structure → ML → Expected R → Shadow Research</div>
+        </div>
+      </div>
+
+      <div class="small" style="margin-top:11px">API docs: <a href="/docs">/docs</a> · Live status: <a href="/api/live/status">/api/live/status</a> · Training status: <a href="/api/training/status">/api/training/status</a></div>
     </div>
   </div>
-  <div class="footer">V0.9.1 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
+  <div class="footer">V0.9.2 research mode. BTCUSD is sourced from Coinbase BTC-USD. M3 is built causally from three closed 1-minute Coinbase candles. Broker orders remain disabled.</div>
 </div>
 <script>
 const $=id=>document.getElementById(id);
@@ -338,6 +469,31 @@ async function replayTraining(){
   $("replayTrainingBtn").disabled=false;
   if(lastTraining)drawTrainingState(lastTraining.status||"IDLE",lastTraining,false);
 }
+
+function updatePipeline(d){
+  const cb=d.coinbase||{};
+  const xs=symbolData(d,"XAUUSD");
+  const btc=symbolData(d,"BTCUSD");
+  const btcLive=!!cb.last_success;
+  const xauLive=!!(xs && ((xs.timeframes?.M3?.rows||0)+(xs.timeframes?.M5?.rows||0)+(xs.timeframes?.M15?.rows||0)>0));
+  const modelReady=!!d.models?.BTCUSD?.available;
+
+  $("pipeBtcSource").classList.toggle("live",btcLive);
+  $("pipeXauSource").classList.toggle("live",xauLive);
+  $("pipeSources").classList.toggle("ready",btcLive||xauLive);
+  $("pipeSources").classList.toggle("wait",!(btcLive||xauLive));
+  $("pipeSourceState").textContent=(btcLive||xauLive)?"LIVE FEED":"WAITING FOR DATA";
+
+  $("pipeModel").classList.toggle("ready",modelReady);
+  $("pipeModel").classList.toggle("wait",!modelReady);
+  $("pipeModelState").textContent=modelReady?"MODEL READY":"MODEL NOT AVAILABLE";
+
+  $("pipeBtcInfo").textContent="BTC Coinbase: "+(btcLive?"LIVE":"WAITING");
+  $("pipeXauInfo").textContent="XAU MT5: "+(xauLive?"LIVE":"WAITING");
+  $("pipeModelInfo").textContent="BTC Model: "+(modelReady?(d.models.BTCUSD.version||"READY"):"NOT AVAILABLE");
+  $("pipeSignalInfo").textContent="Shadow signals: "+(d.buffer?.shadow_signal_count||0);
+  $("pipeSignalState").textContent=(d.buffer?.shadow_signal_count||0)>0?"RECORDING":"MONITORING";
+}
 function symbolData(data,name){return (data.buffer?.symbols||[]).find(x=>x.symbol===name)}
 function paintSymbol(prefix,s,waiting){
   if(!s)return;
@@ -372,6 +528,7 @@ async function refresh(){
     modelText($("btcModel"),d.models?.BTCUSD);
     lastTraining=d.training?.BTCUSD||null;
     if(lastTraining && !trainReplay)drawTrainingState(lastTraining.status||"IDLE",lastTraining,false);
+    updatePipeline(d);
   }catch(e){$("apiState").textContent="API ERROR"}
 
   try{
