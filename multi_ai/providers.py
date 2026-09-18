@@ -7,6 +7,7 @@ from typing import Any
 import httpx
 
 VALID_DECISIONS = {"BUY", "SELL", "NO_TRADE"}
+RETRYABLE_HTTP = {500, 502, 503, 504}
 
 
 def _json_from_text(text: str) -> dict[str, Any]:
@@ -26,7 +27,7 @@ def _json_from_text(text: str) -> dict[str, Any]:
     raise ValueError("model did not return valid JSON")
 
 
-def normalize_vote(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
+def normalize_vote(provider: str, payload: dict[str, Any], model: str | None = None) -> dict[str, Any]:
     decision = str(payload.get("decision", "NO_TRADE")).upper().replace(" ", "_")
     if decision == "WAIT":
         decision = "NO_TRADE"
@@ -40,7 +41,7 @@ def normalize_vote(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
         confidence *= 100
     confidence = max(0.0, min(100.0, confidence))
     checks = payload.get("checks") if isinstance(payload.get("checks"), dict) else {}
-    return {
+    row = {
         "provider": provider,
         "decision": decision,
         "confidence": round(confidence, 2),
@@ -49,6 +50,9 @@ def normalize_vote(provider: str, payload: dict[str, Any]) -> dict[str, Any]:
         "checks": checks,
         "raw_valid": True,
     }
+    if model:
+        row["model"] = model
+    return row
 
 
 def provider_status() -> dict[str, dict[str, Any]]:
@@ -72,18 +76,40 @@ def provider_status() -> dict[str, dict[str, Any]]:
     }
 
 
-async def _post(url: str, *, headers: dict[str, str], json_body: dict[str, Any], timeout: float = 50.0):
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            r = await client.post(url, headers=headers, json=json_body)
+async def _post(
+    url: str,
+    *,
+    headers: dict[str, str],
+    json_body: dict[str, Any],
+    timeout: float = 45.0,
+    retries: int = 0,
+):
+    last_error: str | None = None
+    for attempt in range(retries + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                r = await client.post(url, headers=headers, json=json_body)
+            if r.status_code in RETRYABLE_HTTP and attempt < retries:
+                last_error = f"provider_http_{r.status_code}"
+                await asyncio.sleep(min(4.0, 0.75 * (2 ** attempt)))
+                continue
             r.raise_for_status()
             return r.json()
-    except httpx.HTTPStatusError as exc:
-        raise RuntimeError(f"provider_http_{exc.response.status_code}") from None
-    except httpx.TimeoutException:
-        raise RuntimeError("provider_timeout") from None
-    except httpx.RequestError:
-        raise RuntimeError("provider_network_error") from None
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(f"provider_http_{exc.response.status_code}") from None
+        except httpx.TimeoutException:
+            last_error = "provider_timeout"
+            if attempt < retries:
+                await asyncio.sleep(min(4.0, 0.75 * (2 ** attempt)))
+                continue
+            raise RuntimeError(last_error) from None
+        except httpx.RequestError:
+            last_error = "provider_network_error"
+            if attempt < retries:
+                await asyncio.sleep(min(4.0, 0.75 * (2 ** attempt)))
+                continue
+            raise RuntimeError(last_error) from None
+    raise RuntimeError(last_error or "provider_request_failed")
 
 
 async def call_openai(prompt: str) -> dict[str, Any]:
@@ -100,6 +126,7 @@ async def call_openai(prompt: str) -> dict[str, Any]:
             "reasoning": {"effort": os.getenv("OPENAI_REASONING_EFFORT", "medium")},
             "max_output_tokens": int(os.getenv("OPENAI_MAX_OUTPUT_TOKENS", "1200")),
         },
+        timeout=float(os.getenv("OPENAI_TIMEOUT", "45")),
     )
     text = data.get("output_text")
     if not text:
@@ -109,7 +136,7 @@ async def call_openai(prompt: str) -> dict[str, Any]:
                 if c.get("type") in ("output_text", "text") and c.get("text"):
                     chunks.append(c["text"])
         text = "\n".join(chunks)
-    return normalize_vote("chatgpt", _json_from_text(text or ""))
+    return normalize_vote("chatgpt", _json_from_text(text or ""), model)
 
 
 async def call_claude(prompt: str) -> dict[str, Any]:
@@ -129,33 +156,69 @@ async def call_claude(prompt: str) -> dict[str, Any]:
             "max_tokens": int(os.getenv("ANTHROPIC_MAX_TOKENS", "1200")),
             "messages": [{"role": "user", "content": prompt}],
         },
+        timeout=float(os.getenv("ANTHROPIC_TIMEOUT", "45")),
     )
     text = "\n".join(x.get("text", "") for x in data.get("content", []) if x.get("type") == "text")
-    return normalize_vote("claude", _json_from_text(text))
+    return normalize_vote("claude", _json_from_text(text), model)
+
+
+def _gemini_interactions_text(data: dict[str, Any]) -> str:
+    chunks: list[str] = []
+    for step in data.get("steps", []) or []:
+        if step.get("type") != "model_output":
+            continue
+        for part in step.get("content", []) or []:
+            if part.get("type") == "text" and part.get("text"):
+                chunks.append(part["text"])
+    if chunks:
+        return "\n".join(chunks)
+    # Defensive compatibility with alternate/older response shapes.
+    if data.get("output_text"):
+        return str(data["output_text"])
+    return ""
+
+
+async def _call_gemini_model(prompt: str, key: str, model: str) -> dict[str, Any]:
+    base = os.getenv("GEMINI_INTERACTIONS_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
+    data = await _post(
+        f"{base}/interactions",
+        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
+        json_body={
+            "model": model,
+            "input": prompt,
+            "store": False,
+            "generation_config": {
+                "thinking_level": os.getenv("GEMINI_THINKING_LEVEL", "low"),
+                "max_output_tokens": int(os.getenv("GEMINI_MAX_OUTPUT_TOKENS", "1200")),
+            },
+        },
+        timeout=float(os.getenv("GEMINI_TIMEOUT", "35")),
+        retries=int(os.getenv("GEMINI_RETRIES", "2")),
+    )
+    text = _gemini_interactions_text(data)
+    return normalize_vote("gemini", _json_from_text(text), model)
 
 
 async def call_gemini(prompt: str) -> dict[str, Any]:
     key = os.getenv("GEMINI_API_KEY", "").strip()
-    model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    primary = os.getenv("GEMINI_MODEL", "gemini-3.8-flash").strip()
+    fallback = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.6-flash").strip()
     if not key:
         raise RuntimeError("GEMINI_API_KEY not configured")
-    base = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-    url = f"{base}/models/{model}:generateContent"
-    data = await _post(
-        url,
-        headers={"x-goog-api-key": key, "Content-Type": "application/json"},
-        json_body={
-            "contents": [{"role": "user", "parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "responseMimeType": "application/json",
-                "thinkingConfig": {"thinkingLevel": os.getenv("GEMINI_THINKING_LEVEL", "medium")},
-            },
-        },
-    )
-    candidates = data.get("candidates", []) or []
-    parts = candidates[0].get("content", {}).get("parts", []) if candidates else []
-    text = "\n".join(p.get("text", "") for p in parts if p.get("text"))
-    return normalize_vote("gemini", _json_from_text(text))
+    try:
+        return await _call_gemini_model(prompt, key, primary)
+    except RuntimeError as exc:
+        # Same provider fallback only for transient availability/network failures.
+        if fallback and fallback != primary and str(exc) in {
+            "provider_timeout",
+            "provider_network_error",
+            "provider_http_500",
+            "provider_http_502",
+            "provider_http_503",
+            "provider_http_504",
+        }:
+            return await _call_gemini_model(prompt, key, fallback)
+        raise
 
 
 async def call_deepseek(prompt: str) -> dict[str, Any]:
@@ -175,10 +238,10 @@ async def call_deepseek(prompt: str) -> dict[str, Any]:
             "thinking": {"type": os.getenv("DEEPSEEK_THINKING", "enabled")},
             "response_format": {"type": "json_object"},
         },
-        timeout=float(os.getenv("DEEPSEEK_TIMEOUT", "90")),
+        timeout=float(os.getenv("DEEPSEEK_TIMEOUT", "45")),
     )
     text = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-    return normalize_vote("deepseek", _json_from_text(text))
+    return normalize_vote("deepseek", _json_from_text(text), model)
 
 
 CALLERS = {
@@ -192,7 +255,18 @@ CALLERS = {
 async def ask_all(prompt: str) -> list[dict[str, Any]]:
     async def one(name: str, fn):
         try:
-            return await fn(prompt)
+            timeout = float(os.getenv("PROVIDER_HARD_TIMEOUT", "55"))
+            return await asyncio.wait_for(fn(prompt), timeout=timeout)
+        except asyncio.TimeoutError:
+            return {
+                "provider": name,
+                "decision": "NO_TRADE",
+                "confidence": 0.0,
+                "veto": True,
+                "reason": "PROVIDER_ERROR: provider_hard_timeout",
+                "checks": {},
+                "raw_valid": False,
+            }
         except Exception as exc:
             return {
                 "provider": name,
@@ -220,13 +294,22 @@ async def self_test_all() -> dict[str, Any]:
         if not statuses[name]["configured"]:
             return {"provider": name, "configured": False, "reachable": False, "model": statuses[name]["model"], "error": "NOT_CONFIGURED"}
         try:
-            vote = await fn(prompt)
+            timeout = float(os.getenv("PROVIDER_SELFTEST_TIMEOUT", "45"))
+            vote = await asyncio.wait_for(fn(prompt), timeout=timeout)
             return {
                 "provider": name,
                 "configured": True,
                 "reachable": bool(vote.get("raw_valid")),
-                "model": statuses[name]["model"],
+                "model": vote.get("model") or statuses[name]["model"],
                 "decision": vote.get("decision"),
+            }
+        except asyncio.TimeoutError:
+            return {
+                "provider": name,
+                "configured": True,
+                "reachable": False,
+                "model": statuses[name]["model"],
+                "error": "provider_hard_timeout",
             }
         except Exception as exc:
             return {
