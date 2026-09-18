@@ -72,7 +72,7 @@ class CoinbaseBTCFeed:
             timeout=20.0,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "AI-Market-Intelligence/0.9",
+                "User-Agent": "AI-Market-Intelligence/0.11.1",
             },
         ) as client:
             m1 = await self._fetch_candles(client, 60, one_minute_points)
