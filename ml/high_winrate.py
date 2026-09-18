@@ -17,7 +17,6 @@ def _candidate_thresholds(p,rr=TARGET_RR):
     p=p[np.isfinite(p)]
     if len(p)==0:
         return []
-    # RR 1:2 break-even is 33.33%. V0.12 starts with a meaningful buffer.
     floor=max(break_even_probability(rr)+0.02,0.35)
     quantiles=np.quantile(p,[.35,.45,.55,.65,.72,.78,.84,.89,.93,.96,.98,.99])
     upper=min(.95,max(float(np.max(p)),floor))
@@ -129,7 +128,15 @@ def learn_high_winrate_policy(frame,probability,rr=TARGET_RR):
     }
 
 
-def high_winrate_quality_gate(test_frame,test_probability,selected_mask,applied_thresholds,rr,temporal_stability=None):
+def high_winrate_quality_gate(
+    test_frame,
+    test_probability,
+    selected_mask,
+    applied_thresholds,
+    rr,
+    policy_status="HIGH_WINRATE_RR_1_2",
+    temporal_stability=None,
+):
     gate=quality_gate_from_selection(
         test_frame,
         test_probability,
