@@ -6,7 +6,7 @@ from data.multitimeframe import attach_htf_context
 from smc.engine import add_smc_features
 from live.model_loader import LiveModelLoader
 from live.shadow import ShadowJournal
-from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance
+from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance\nfrom ml.quality import threshold_for_context
 
 
 class LiveInference:
@@ -16,7 +16,7 @@ class LiveInference:
         self.loader=LiveModelLoader()
         self.journal=ShadowJournal()
 
-    def analyze(self,symbol,m3,m5,m15,version="v0.11"):
+    def analyze(self,symbol,m3,m5,m15,version="v0.11.1"):
         bundle=self.loader.load(symbol,version)
         if bundle is None:
             return {
@@ -54,22 +54,13 @@ class LiveInference:
         )
 
         row["regime"]=bundle["regime"].predict(row)
-        filters=bundle.get("learned_filters") or {}
         regime_name=str(int(row.regime.iloc[0]))
         session=str(row.session_name.iloc[0])
-        allowed_regimes=filters.get("allowed_regimes") or []
-        allowed_sessions=filters.get("allowed_sessions") or []
-
-        if allowed_regimes and regime_name not in allowed_regimes:
+        policy=bundle.get("threshold_policy") or {}
+        threshold=threshold_for_context(regime_name,session,policy)
+        if threshold is None:
             return {
-                "status":"FILTERED_OUT","reason":"REGIME",
-                "symbol":symbol,"regime":int(row.regime.iloc[0]),
-                "session":session,"mode":"SHADOW_RESEARCH",
-                "model_version":version,
-            }
-        if allowed_sessions and session not in allowed_sessions:
-            return {
-                "status":"FILTERED_OUT","reason":"SESSION",
+                "status":"FILTERED_OUT","reason":"THRESHOLD_POLICY",
                 "symbol":symbol,"regime":int(row.regime.iloc[0]),
                 "session":session,"mode":"SHADOW_RESEARCH",
                 "model_version":version,
