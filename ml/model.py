@@ -43,3 +43,25 @@ class ProbabilityEnsemble:
     def predict_proba(self, x):
         raw = self.raw_probability(x)
         return self.calibrator.predict(raw) if self.calibrated else raw
+
+
+    def feature_importance(self, feature_names):
+        """Average normalized native importances from LightGBM and XGBoost."""
+        names=list(feature_names)
+        l=np.asarray(getattr(self.lgbm,"feature_importances_",np.zeros(len(names))),dtype=float)
+        x=np.asarray(getattr(self.xgb,"feature_importances_",np.zeros(len(names))),dtype=float)
+        if len(l)!=len(names): l=np.resize(l,len(names))
+        if len(x)!=len(names): x=np.resize(x,len(names))
+        if l.sum()>0: l=l/l.sum()
+        if x.sum()>0: x=x/x.sum()
+        avg=(l+x)/2.0
+        order=np.argsort(-avg)
+        return [
+            {
+                "feature":names[i],
+                "importance":float(avg[i]),
+                "lightgbm":float(l[i]),
+                "xgboost":float(x[i]),
+            }
+            for i in order
+        ]
