@@ -23,7 +23,7 @@ from ml.regime import RegimeClassifier
 class TrainingManager:
     """V0.11 learning + validation loop for BTCUSD and XAUUSD."""
 
-    def __init__(self, shadow_service, version="v0.11"):
+    def __init__(self, shadow_service, version="v0.11.1"):
         self.shadow=shadow_service
         self.version=version
         self.registry=ModelRegistry()
@@ -78,7 +78,7 @@ class TrainingManager:
             return
         if self.task and not self.task.done():
             return
-        self.task=asyncio.create_task(self._train_btc(),name="btc-model-training-v011")
+        self.task=asyncio.create_task(self._train_btc(),name="btc-model-training-v0111")
 
     async def start_xau(self,force=False):
         if not force and self._restore_existing("XAUUSD"):
@@ -100,7 +100,7 @@ class TrainingManager:
         if self.task and not self.task.done() and self.state["BTCUSD"].get("status")!="READY":
             self._update("XAUUSD",status="WAITING_FOR_BTC_TRAINING",history=history)
             return
-        self.xau_task=asyncio.create_task(self._train_xau(),name="xau-model-training-v011")
+        self.xau_task=asyncio.create_task(self._train_xau(),name="xau-model-training-v0111")
 
     async def _fit_validate(self,symbol,dataset,rr,horizon,source,history=None):
         dataset=dataset.sort_values("timestamp").reset_index(drop=True)
@@ -141,20 +141,17 @@ class TrainingManager:
         await asyncio.to_thread(model.fit,train[features],train["label"])
         await asyncio.to_thread(model.calibrate,cal[features],cal["label"])
 
-        self._update(symbol,status="CALIBRATING_THRESHOLD")
+        self._update(symbol,status="LEARNING_THRESHOLD_POLICY")
         cal_p=model.predict_proba(cal[features])
-        selected,sweep=select_threshold(cal["label"],cal_p,rr=rr)
-        threshold=float(selected["threshold"]) if selected else 0.60
-
-        filters=learn_regime_session_filters(
-            cal,cal_p,threshold=threshold,rr=rr
-        )
+        policy=learn_threshold_policy(cal,cal_p,rr=rr)
+        threshold=policy.get("global_threshold")
+        if threshold is None:
+            threshold=float(policy.get("break_even_probability",1.0/(1.0+rr)) + 0.01)
 
         self._update(symbol,status="VALIDATING_QUALITY")
         test_p=model.predict_proba(test[features])
         gate=quality_gate(
-            test,test_p,threshold,rr,filters,
-            calibration_selection=selected,
+            test,test_p,rr,policy,
         )
 
         importance=model.feature_importance(features)
@@ -209,14 +206,14 @@ class TrainingManager:
             finished_at=None,error=None,dataset_rows=0,metrics=None,quality=None,
         )
         try:
-            days=max(14,int(os.getenv("BTC_TRAIN_DAYS","30")))
+            days=max(30,int(os.getenv("BTC_TRAIN_DAYS","60")))
             horizon=max(20,int(os.getenv("BTC_LABEL_HORIZON","80")))
             rr=float(os.getenv("DEFAULT_RR","3.0"))
 
             feed=CoinbaseBTCFeed(self.shadow,poll_seconds=60)
             async with httpx.AsyncClient(
                 base_url=feed.BASE_URL,timeout=30.0,
-                headers={"Accept":"application/json","User-Agent":"AI-Market-Intelligence-Trainer/0.11"},
+                headers={"Accept":"application/json","User-Agent":"AI-Market-Intelligence-Trainer/0.11.1"},
             ) as client:
                 m1=await feed._fetch_candles(client,60,days*24*60)
                 m5=await feed._fetch_candles(client,300,days*24*12)
