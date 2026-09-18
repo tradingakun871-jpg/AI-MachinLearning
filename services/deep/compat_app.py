@@ -1,3 +1,4 @@
+import json
 import os
 import time
 
@@ -74,8 +75,6 @@ def chronos_predict_compat(df: pd.DataFrame, horizon: int):
     return med, q10, q90
 
 
-# Patch only the Chronos dataframe adapter; all auth, cache, PatchTST and TFT
-# behavior remains in the original service.
 core.chronos_predict = chronos_predict_compat
 app = core.app
 
@@ -85,14 +84,16 @@ def selftest_compat():
     """One fixed XAUUSD M3 inference check without exposing internal secrets."""
     token = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
     if not token:
-        return {"ok": False, "error": "internal token unavailable"}
+        result = {"ok": False, "error": "internal token unavailable"}
+        print("DEEP_SELFTEST=" + json.dumps(result, separators=(",", ":")), flush=True)
+        return result
 
     req = core.ForecastRequest(symbol="XAUUSD", timeframe="M3", candles=[], prediction_length=10)
     started = time.perf_counter()
     try:
         data = core.forecast(req, token)
         models = data.get("models") or {}
-        return {
+        result = {
             "ok": True,
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
             "status": data.get("status"),
@@ -108,8 +109,10 @@ def selftest_compat():
             "quality_note": data.get("quality_note"),
         }
     except Exception as exc:
-        return {
+        result = {
             "ok": False,
             "latency_ms": round((time.perf_counter() - started) * 1000, 1),
             "error": f"{type(exc).__name__}: {exc}"[:700],
         }
+    print("DEEP_SELFTEST=" + json.dumps(result, default=str, separators=(",", ":")), flush=True)
+    return result
