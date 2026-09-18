@@ -65,9 +65,9 @@ def provider_status() -> dict[str, dict[str, Any]]:
             "configured": bool(os.getenv("GEMINI_API_KEY") and os.getenv("GEMINI_MODEL")),
             "model": os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
         },
-        "qwen3": {
-            "configured": bool(os.getenv("QWEN_API_KEY") and os.getenv("QWEN_MODEL") and os.getenv("QWEN_BASE_URL")),
-            "model": os.getenv("QWEN_MODEL", "qwen3.8-max"),
+        "deepseek": {
+            "configured": bool(os.getenv("DEEPSEEK_API_KEY") and os.getenv("DEEPSEEK_MODEL") and os.getenv("DEEPSEEK_BASE_URL")),
+            "model": os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"),
         },
     }
 
@@ -79,7 +79,6 @@ async def _post(url: str, *, headers: dict[str, str], json_body: dict[str, Any],
             r.raise_for_status()
             return r.json()
     except httpx.HTTPStatusError as exc:
-        # Deliberately do not include URL/body: provider URLs can contain sensitive workspace data.
         raise RuntimeError(f"provider_http_{exc.response.status_code}") from None
     except httpx.TimeoutException:
         raise RuntimeError("provider_timeout") from None
@@ -141,7 +140,6 @@ async def call_gemini(prompt: str) -> dict[str, Any]:
     if not key:
         raise RuntimeError("GEMINI_API_KEY not configured")
     base = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com/v1beta").rstrip("/")
-    # Keep API key in a header, never in the URL/log/error path.
     url = f"{base}/models/{model}:generateContent"
     data = await _post(
         url,
@@ -160,30 +158,34 @@ async def call_gemini(prompt: str) -> dict[str, Any]:
     return normalize_vote("gemini", _json_from_text(text))
 
 
-async def call_qwen(prompt: str) -> dict[str, Any]:
-    key = os.getenv("QWEN_API_KEY", "").strip()
-    model = os.getenv("QWEN_MODEL", "qwen3.8-max").strip()
-    base = os.getenv("QWEN_BASE_URL", "").strip().rstrip("/")
-    if not key or not base:
-        raise RuntimeError("QWEN_API_KEY/QWEN_BASE_URL not configured")
+async def call_deepseek(prompt: str) -> dict[str, Any]:
+    key = os.getenv("DEEPSEEK_API_KEY", "").strip()
+    model = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro").strip()
+    base = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip().rstrip("/")
+    if not key:
+        raise RuntimeError("DEEPSEEK_API_KEY not configured")
     data = await _post(
         f"{base}/chat/completions",
         headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
         json_body={
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
+            "stream": False,
+            "reasoning_effort": os.getenv("DEEPSEEK_REASONING_EFFORT", "high"),
+            "thinking": {"type": os.getenv("DEEPSEEK_THINKING", "enabled")},
+            "response_format": {"type": "json_object"},
         },
+        timeout=float(os.getenv("DEEPSEEK_TIMEOUT", "90")),
     )
     text = (((data.get("choices") or [{}])[0].get("message") or {}).get("content") or "")
-    return normalize_vote("qwen3", _json_from_text(text))
+    return normalize_vote("deepseek", _json_from_text(text))
 
 
 CALLERS = {
     "chatgpt": call_openai,
     "claude": call_claude,
     "gemini": call_gemini,
-    "qwen3": call_qwen,
+    "deepseek": call_deepseek,
 }
 
 
