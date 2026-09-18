@@ -78,7 +78,8 @@ def model_quality():
             "version":trainer.status().get(symbol,{}).get("version"),
             "quality":trainer.status().get(symbol,{}).get("quality"),
             "feature_importance":((trainer.status().get(symbol,{}).get("metrics") or {}).get("feature_importance")),
-            "learned_filters":((trainer.status().get(symbol,{}).get("metrics") or {}).get("learned_filters")),\n            "threshold_policy":((trainer.status().get(symbol,{}).get("metrics") or {}).get("threshold_policy")),
+            "learned_filters":((trainer.status().get(symbol,{}).get("metrics") or {}).get("learned_filters")),
+            "threshold_policy":((trainer.status().get(symbol,{}).get("metrics") or {}).get("threshold_policy")),
         }
         for symbol in ("XAUUSD","BTCUSD")
     }
