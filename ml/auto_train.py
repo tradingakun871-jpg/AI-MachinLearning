@@ -71,6 +71,8 @@ class TrainingManager:
             meta = self.registry.metadata(symbol, self.version)
         except Exception:
             meta = {}
+        if self.version == "v0.11.3" and not meta.get("temporal_stability"):
+            return False
         self._update(
             symbol,
             status="READY",
@@ -207,6 +209,8 @@ class TrainingManager:
                 "selected_feature_count": int(len(selected_features)),
                 "feature_importance": final_importance[:20],
                 "threshold_policy": policy,
+                "calibration_method": model.calibration_method,
+                "calibration_diagnostics": model.calibration_diagnostics,
                 "calibration_probability_diagnostics": probability_diagnostics(
                     ca["label"], cal_p, ca
                 ),
@@ -304,6 +308,7 @@ class TrainingManager:
             combined_thresholds,
             rr,
             policy_status="SIDE_CONTEXTUAL",
+            temporal_stability=temporal_stability,
         )
 
         side_metrics = {
@@ -328,6 +333,7 @@ class TrainingManager:
             "test_rows": int(len(test)),
             "side_models": side_metrics,
             "threshold_policy": threshold_policy,
+            "temporal_stability": temporal_stability,
             "feature_importance": aggregate_importance[:25],
             "probability": gate["probability"],
             "probability_diagnostics": gate["probability_diagnostics"],
@@ -349,6 +355,7 @@ class TrainingManager:
             "symbol": symbol,
             "version": self.version,
             "threshold_policy": threshold_policy,
+            "temporal_stability": temporal_stability,
             "quality_gate": gate,
         }
 
