@@ -1,7 +1,8 @@
 import os
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, create_engine, func, select
+from sqlalchemy import Boolean, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint, create_engine, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
 
 _engine = None
@@ -54,6 +55,22 @@ class TrainingState(Base):
     metrics: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
 
+class MarketCandle(Base):
+    __tablename__ = "market_candles"
+    __table_args__ = (UniqueConstraint("symbol", "timeframe", "timestamp", name="uq_market_candle"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    symbol: Mapped[str] = mapped_column(String(24), index=True)
+    timeframe: Mapped[str] = mapped_column(String(8), index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    open: Mapped[float] = mapped_column(Float)
+    high: Mapped[float] = mapped_column(Float)
+    low: Mapped[float] = mapped_column(Float)
+    close: Mapped[float] = mapped_column(Float)
+    volume: Mapped[float] = mapped_column(Float, default=0.0)
+    spread: Mapped[float] = mapped_column(Float, default=0.0)
+
+
 def init_database():
     global _engine, _Session
     url = _database_url()
@@ -89,6 +106,16 @@ def _to_int(value):
         return None if value is None else int(value)
     except Exception:
         return None
+
+
+def _to_datetime(value):
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    text=str(value).strip()
+    if text.endswith("Z"):
+        text=text[:-1] + "+00:00"
+    parsed=datetime.fromisoformat(text)
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
 
 
 def record_shadow_signal(row: dict):
@@ -171,3 +198,89 @@ def latest_training_state(symbol: str):
         "dataset_rows":row.dataset_rows,
         "metrics":row.metrics,
     }
+
+
+def upsert_market_candles(symbol: str, timeframe: str, candles: list[dict]):
+    if not init_database():
+        raise RuntimeError("database is not configured")
+    symbol=symbol.upper()
+    timeframe=timeframe.upper()
+    rows=[]
+    for candle in candles:
+        rows.append({
+            "symbol":symbol,
+            "timeframe":timeframe,
+            "timestamp":_to_datetime(candle["timestamp"]),
+            "open":float(candle["open"]),
+            "high":float(candle["high"]),
+            "low":float(candle["low"]),
+            "close":float(candle["close"]),
+            "volume":float(candle.get("volume",0.0) or 0.0),
+            "spread":float(candle.get("spread",0.0) or 0.0),
+        })
+    if not rows:
+        return 0
+
+    stmt=pg_insert(MarketCandle).values(rows)
+    stmt=stmt.on_conflict_do_update(
+        constraint="uq_market_candle",
+        set_={
+            "open":stmt.excluded.open,
+            "high":stmt.excluded.high,
+            "low":stmt.excluded.low,
+            "close":stmt.excluded.close,
+            "volume":stmt.excluded.volume,
+            "spread":stmt.excluded.spread,
+        },
+    )
+    with _engine.begin() as conn:
+        conn.execute(stmt)
+    return len(rows)
+
+
+def market_history_status(symbol: str):
+    if not init_database():
+        return {}
+    symbol=symbol.upper()
+    result={}
+    with _Session() as s:
+        for tf in ("M3","M5","M15"):
+            count_, first_, last_=s.execute(
+                select(
+                    func.count(MarketCandle.id),
+                    func.min(MarketCandle.timestamp),
+                    func.max(MarketCandle.timestamp),
+                ).where(
+                    MarketCandle.symbol == symbol,
+                    MarketCandle.timeframe == tf,
+                )
+            ).one()
+            result[tf]={
+                "rows":int(count_ or 0),
+                "first_timestamp":first_.isoformat() if first_ else None,
+                "last_timestamp":last_.isoformat() if last_ else None,
+            }
+    return result
+
+
+def load_market_candles(symbol: str, timeframe: str):
+    if not init_database():
+        return []
+    with _Session() as s:
+        rows=s.execute(
+            select(MarketCandle)
+            .where(
+                MarketCandle.symbol == symbol.upper(),
+                MarketCandle.timeframe == timeframe.upper(),
+            )
+            .order_by(MarketCandle.timestamp.asc())
+        ).scalars().all()
+    return [{
+        "timestamp":r.timestamp,
+        "open":r.open,
+        "high":r.high,
+        "low":r.low,
+        "close":r.close,
+        "volume":r.volume,
+        "spread":r.spread,
+    } for r in rows]
