@@ -1,23 +1,33 @@
+import hmac
 import os
 import re
 import threading
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 MODEL_ID = os.getenv("FINBERT_MODEL", "ProsusAI/finbert")
 _pipe = None
 _lock = threading.Lock()
 
-app = FastAPI(title="Financial NLP Brain", version="1.0.0")
+app = FastAPI(title="Financial NLP Brain", version="1.1.0")
 
 
 class NLPRequest(BaseModel):
     symbol: str = "XAUUSD"
     texts: list[str] = Field(default_factory=list, max_length=50)
     event: dict[str, Any] | None = None
+
+
+def require_internal(x_internal_token: str | None = Header(default=None)):
+    expected = os.getenv("INTERNAL_SERVICE_TOKEN", "").strip()
+    if not expected:
+        raise HTTPException(503, "internal service token is not configured")
+    supplied = (x_internal_token or "").strip()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        raise HTTPException(401, "unauthorized")
 
 
 def get_pipe():
@@ -86,14 +96,7 @@ def event_impact(symbol: str, kind: str, sent: float, evt: dict[str, Any] | None
 
     if symbol == "XAUUSD":
         if kind in ("US_INFLATION", "US_JOBS", "FED_POLICY", "USD_YIELD"):
-            macro = 0.0
-            if s is not None:
-                macro = s
-            elif kind == "FED_POLICY":
-                macro = -sent
-            else:
-                macro = -sent
-            # Positive US macro / hawkish / rising yield usually pressures gold; inverse for weak/dovish.
+            macro = s if s is not None else -sent
             gold_bias = -macro
             if gold_bias > 0.08:
                 direction = "BULLISH"
@@ -132,17 +135,19 @@ def event_impact(symbol: str, kind: str, sent: float, evt: dict[str, Any] | None
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": "financial-nlp-brain", "model": MODEL_ID, "model_loaded": _pipe is not None}
+    return {"status": "ok", "service": "financial-nlp-brain", "version": "1.1.0", "model": MODEL_ID, "model_loaded": _pipe is not None}
 
 
 @app.post("/warmup")
-def warmup():
+def warmup(x_internal_token: str | None = Header(default=None)):
+    require_internal(x_internal_token)
     get_pipe()
     return {"ok": True, "model": MODEL_ID, "loaded": True}
 
 
 @app.post("/analyze")
-def analyze(req: NLPRequest):
+def analyze(req: NLPRequest, x_internal_token: str | None = Header(default=None)):
+    require_internal(x_internal_token)
     texts = [x.strip() for x in req.texts if x and x.strip()][:50]
     if not texts:
         return {
