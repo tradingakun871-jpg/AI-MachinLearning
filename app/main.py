@@ -79,7 +79,9 @@ def model_quality():
             "quality":trainer.status().get(symbol,{}).get("quality"),
             "feature_importance":((trainer.status().get(symbol,{}).get("metrics") or {}).get("feature_importance")),
             "learned_filters":((trainer.status().get(symbol,{}).get("metrics") or {}).get("learned_filters")),
-            "threshold_policy":((trainer.status().get(symbol,{}).get("metrics") or {}).get("threshold_policy")),\n            "side_models":((trainer.status().get(symbol,{}).get("metrics") or {}).get("side_models")),\n            "probability_diagnostics":((trainer.status().get(symbol,{}).get("metrics") or {}).get("probability_diagnostics")),
+            "threshold_policy":((trainer.status().get(symbol,{}).get("metrics") or {}).get("threshold_policy")),
+            "side_models":((trainer.status().get(symbol,{}).get("metrics") or {}).get("side_models")),
+            "probability_diagnostics":((trainer.status().get(symbol,{}).get("metrics") or {}).get("probability_diagnostics")),
         }
         for symbol in ("XAUUSD","BTCUSD")
     }
