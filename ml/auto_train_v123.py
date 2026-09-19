@@ -2,6 +2,8 @@ import asyncio
 import json
 import os
 
+import numpy as np
+
 import ml.auto_train as base_train
 import ml.stability as stability_module
 from app.database import market_history_status
@@ -47,19 +49,20 @@ def _restore_env(name,previous):
 
 
 class TrainingManager(V122TrainingManager):
-    """V0.12.4 deep-history + stable-context research trainer.
+    """V0.12.5 deep-history trainer with directional walk-forward gating.
 
-    RR is forced to 1:2 for BOTH label construction and all downstream
-    calibration/validation. This prevents a 3R-labeled dataset from being
-    evaluated as a 2R strategy when Railway DEFAULT_RR is configured differently.
+    RR is forced to 1:2 for BOTH label construction and downstream validation.
+    BUY/SELL activation is decided only from pre-holdout walk-forward evidence.
+    The untouched final holdout never decides whether a direction is enabled.
     """
 
-    def __init__(self, shadow_service, version="v0.12.4"):
+    def __init__(self, shadow_service, version="v0.12.5"):
         super().__init__(shadow_service,version=version)
         self.state["XAUUSD"]["required_history"]=dict(XAU_DEEP_HISTORY_REQUIRED)
         self.state["BTCUSD"]["required_history_days"]=BTC_DEEP_HISTORY_DAYS
         self.state["BTCUSD"]["label_rr"]=TARGET_RR
         self.state["XAUUSD"]["label_rr"]=TARGET_RR
+        self._directional_stability={}
 
     async def start_xau(self,force=False):
         if not force and self._restore_existing("XAUUSD"):
@@ -98,8 +101,32 @@ class TrainingManager(V122TrainingManager):
             return
 
         self.xau_task=asyncio.create_task(
-            self._train_xau(),name="xau-model-training-v0124"
+            self._train_xau(),name="xau-model-training-v0125"
         )
+
+    async def _fit_side(self,side,direction,train,cal,test,features,rr):
+        result=await super()._fit_side(side,direction,train,cal,test,features,rr)
+        directional=(self._directional_stability or {}).get(side) or {}
+        directional_pass=bool(directional.get("passed",False))
+
+        result["bundle"]["directional_stability"]=directional
+        result["bundle"]["directional_gate_passed"]=directional_pass
+        result["bundle"]["enabled"]=bool(
+            result["bundle"].get("enabled",False) and directional_pass
+        )
+        result["metrics"]["directional_stability"]=directional
+        result["metrics"]["directional_gate_passed"]=directional_pass
+
+        # The side gate is development-only. If a direction is unstable, do not
+        # let it contribute any final-holdout trades. Probabilities are retained
+        # for diagnostics, but selection is forced to SKIP.
+        if not directional_pass:
+            result["test_mask"]=np.zeros(len(result["test_mask"]),dtype=bool)
+            result["metrics"]["test_selected_rows"]=0
+            result["metrics"]["test_coverage"]=0.0
+            result["metrics"]["test_trading"]={"trades":0}
+
+        return result
 
     async def _fit_validate(self,symbol,dataset,rr,horizon,source,history=None):
         # Ignore inherited/environment RR here as a second guard. The dataset is
@@ -109,11 +136,18 @@ class TrainingManager(V122TrainingManager):
         old_gate=base_train.quality_gate_from_selection
         old_stability_policy=stability_module.learn_threshold_policy
         old_stability_eval=base_train.evaluate_temporal_stability
+        self._directional_stability={}
+
+        def capture_stability(*args,**kwargs):
+            result=evaluate_high_winrate_stability(*args,**kwargs)
+            self._directional_stability=result.get("directional_stability") or {}
+            return result
+
         try:
             base_train.learn_threshold_policy=learn_high_winrate_policy
             base_train.quality_gate_from_selection=_high_winrate_gate_adapter
             stability_module.learn_threshold_policy=learn_high_winrate_policy
-            base_train.evaluate_temporal_stability=evaluate_high_winrate_stability
+            base_train.evaluate_temporal_stability=capture_stability
             return await BaseTrainingManager._fit_validate(
                 self,symbol,dataset,TARGET_RR,horizon,source,history
             )
@@ -122,6 +156,7 @@ class TrainingManager(V122TrainingManager):
             base_train.quality_gate_from_selection=old_gate
             stability_module.learn_threshold_policy=old_stability_policy
             base_train.evaluate_temporal_stability=old_stability_eval
+            self._directional_stability={}
 
     async def _train_btc(self):
         previous_days=os.environ.get("BTC_TRAIN_DAYS")
@@ -168,6 +203,8 @@ class TrainingManager(V122TrainingManager):
             return {
                 "threshold_mode":threshold.get("mode"),
                 "stable_context_counts":threshold.get("stable_context_counts"),
+                "directional_gate_passed":info.get("directional_gate_passed"),
+                "directional_stability":info.get("directional_stability"),
                 "recovery_used":threshold.get("recovery_used"),
                 "hybrid_mode":((info.get("hybrid_gate") or {}).get("mode")),
                 "meta_mode":((info.get("meta_precision") or {}).get("mode")),
@@ -177,7 +214,7 @@ class TrainingManager(V122TrainingManager):
             }
 
         payload={
-            "event":"V0.12.4_TRAINING_RESULT",
+            "event":"V0.12.5_TRAINING_RESULT",
             "symbol":symbol,
             "status":state.get("status"),
             "dataset_rows":state.get("dataset_rows"),
@@ -199,6 +236,8 @@ class TrainingManager(V122TrainingManager):
             "temporal_stability":temporal.get("status"),
             "temporal_summary":temporal.get("summary"),
             "high_winrate_stability":temporal.get("high_winrate_stability"),
+            "directional_stability":temporal.get("directional_stability"),
+            "stable_sides":temporal.get("stable_sides"),
             "buy":side_summary("BUY"),
             "sell":side_summary("SELL"),
         }
