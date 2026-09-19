@@ -1,0 +1,1 @@
+PA + Order Flow V1 validation trigger. Production remains unchanged; this branch is shadow-test only.
