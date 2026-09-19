@@ -50,12 +50,35 @@ PERFORMANCE_PANEL = r'''
       <div class="perf-note" style="margin-top:4px">Failed checks: ${failed}</div>
     </div>`;
   }
+  function updateLegacyPerformance(d){
+    const legacy=[...document.querySelectorAll('.card.span4')].find(el=>{
+      const k=el.querySelector('.k'); return k&&k.textContent.trim()==='Performance';
+    });
+    if(!legacy)return;
+    const x=d.XAUUSD||{}, b=d.BTCUSD||{};
+    const xt=x.trading||{}, bt=b.trading||{};
+    const xHold=(xt.trades??0)>0?pct(xt.win_rate):null;
+    const bHold=(bt.trades??0)>0?pct(bt.win_rate):null;
+    const xWf=pct((x.high_winrate_stability||{}).median_win_rate);
+    const bWf=pct((b.high_winrate_stability||{}).median_win_rate);
+    const main=legacy.querySelector('.v');
+    const note=legacy.querySelector('.small');
+    if(main){
+      main.textContent=(xHold||bHold)?`XAU ${xHold||'—'} · BTC ${bHold||'—'}`:`WF XAU ${xWf} · BTC ${bWf}`;
+      main.className='v '+((x.quality_passed||b.quality_passed)?'ok':'warn');
+    }
+    if(note)note.textContent=(xHold||bHold)?'Final holdout win rate. Detail PF / expectancy / DD ada di panel bawah.':'Final gate belum menghasilkan trade; angka di atas adalah walk-forward median WR. Detail lengkap ada di panel bawah.';
+  }
   window.loadModelPerformance=async function(){
     const target=document.getElementById('perf-grid'); if(!target)return;
     try{
       const r=await fetch('/api/training/summary',{cache:'no-store'}); if(!r.ok)throw new Error('HTTP '+r.status);
-      const d=await r.json(); target.innerHTML=card('XAUUSD',d.XAUUSD)+card('BTCUSD',d.BTCUSD);
-    }catch(e){target.innerHTML=`<div class="perf-note perf-bad">Performance data gagal dimuat: ${e.message}</div>`;}
+      const d=await r.json();
+      target.innerHTML=card('XAUUSD',d.XAUUSD)+card('BTCUSD',d.BTCUSD);
+      updateLegacyPerformance(d);
+    }catch(e){
+      target.innerHTML=`<div class="perf-note perf-bad">Performance data gagal dimuat: ${e.message}</div>`;
+    }
   };
   loadModelPerformance(); setInterval(loadModelPerformance,10000);
 })();
