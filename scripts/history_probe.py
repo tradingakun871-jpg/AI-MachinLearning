@@ -25,6 +25,20 @@ def _training(cur, symbol):
     metrics=row[5] if isinstance(row[5],dict) else {}
     trading=(metrics or {}).get("trading") or {}
     temporal=(metrics or {}).get("temporal_stability") or {}
+    gate=(metrics or {}).get("quality_gate") or {}
+    checks=gate.get("checks") or {}
+    fold_rows=[]
+    for item in (temporal.get("folds") or []):
+        trade=item.get("trading") or {}
+        fold_rows.append({
+            "fold":item.get("fold"),
+            "passed":item.get("passed"),
+            "trades":trade.get("trades"),
+            "win_rate":trade.get("win_rate"),
+            "expectancy_r":trade.get("expectancy_r"),
+            "profit_factor":trade.get("profit_factor"),
+            "max_drawdown_r":trade.get("max_drawdown_r"),
+        })
     return {
         "status":row[0],
         "version":row[1],
@@ -39,7 +53,19 @@ def _training(cur, symbol):
             "profit_factor":trading.get("profit_factor"),
             "max_drawdown_r":trading.get("max_drawdown_r"),
         },
-        "temporal_stability":temporal.get("status"),
+        "quality_gate":{
+            "status":gate.get("status"),
+            "passed":gate.get("passed"),
+            "failed_checks":[name for name,item in checks.items() if not item.get("passed",False)],
+            "checks":checks,
+        },
+        "temporal_stability":{
+            "status":temporal.get("status"),
+            "passed":temporal.get("passed"),
+            "summary":temporal.get("summary"),
+            "high_winrate_stability":temporal.get("high_winrate_stability"),
+            "folds":fold_rows,
+        },
     }
 
 
