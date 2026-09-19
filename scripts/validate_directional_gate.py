@@ -1,4 +1,5 @@
 # Railway smoke-test trigger for V0.12.5 directional stability.
+# Final validator also checks the complete v125 import chain before this script.
 from pathlib import Path
 import sys
 
