@@ -1,4 +1,11 @@
 # Railway smoke-test trigger for V0.12.5 directional stability.
+from pathlib import Path
+import sys
+
+ROOT=Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0,str(ROOT))
+
 from ml.high_winrate_v123 import _directional_stability
 
 
