@@ -3,6 +3,7 @@ from pathlib import Path
 from fastapi.responses import Response
 
 import app.main as base
+from app.dashboard_performance import PERFORMANCE_PANEL
 from live.inference_v12 import LiveInference
 from ml.auto_train_v123 import (
     BTC_DEEP_HISTORY_DAYS,
@@ -147,6 +148,10 @@ async def v126_runtime_labels(request,call_next):
         "180-day Coinbase deep-history training with four-fold temporal diagnostics and independent BUY/SELL stability gating.",
         "180-day Coinbase deep-history training with strict calibration precision and four-fold BUY/SELL stability gating."
     )
+    if "</body>" in text:
+        text=text.replace("</body>",PERFORMANCE_PANEL+"</body>",1)
+    else:
+        text+=PERFORMANCE_PANEL
     headers=dict(response.headers)
     headers.pop("content-length",None)
     return Response(
