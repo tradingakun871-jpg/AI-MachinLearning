@@ -12,12 +12,12 @@ from ml.auto_train_v123 import (
 from ml.features import FEATURE_COLUMNS
 
 
-VERSION="0.12.4"
-MODEL_VERSION="v0.12.4"
+VERSION="0.12.5"
+MODEL_VERSION="v0.12.5"
 FEATURE_SCHEMA="SMC_PA_ORDERFLOW_REGIME_V1"
 
-# New artifact namespace: V0.12.4 keeps the SMC + PA + Order Flow schema from
-# V0.12.3, but requires deeper history and calibration-subwindow context stability.
+# V0.12.5 retains the deep-history SMC + PA + conditional Order Flow feature
+# schema, while adding development-only BUY/SELL walk-forward stability gating.
 base.VERSION=VERSION
 base.trainer=TrainingManager(base.shadow,version=MODEL_VERSION)
 base.shadow.inference=LiveInference(threshold=.34,rr=2.0)
@@ -29,12 +29,12 @@ def model_available(symbol,version=MODEL_VERSION):
 
 base.model_available=model_available
 base.app.version=VERSION
-base.app.title="AI Market Intelligence Agent V0.12.4 Deep History + Stable Context"
+base.app.title="AI Market Intelligence Agent V0.12.5 Directional Stability"
 app=base.app
 
 
 @app.get("/api/training/summary")
-def v124_training_summary():
+def v125_training_summary():
     out={}
     for symbol in ("XAUUSD","BTCUSD"):
         state=base.trainer.status().get(symbol,{})
@@ -43,13 +43,14 @@ def v124_training_summary():
         trading=metrics.get("trading") or {}
         side_models=metrics.get("side_models") or {}
         temporal=metrics.get("temporal_stability") or {}
+        directional=temporal.get("directional_stability") or {}
         out[symbol]={
             "status":state.get("status"),
             "version":state.get("version"),
             "feature_schema":FEATURE_SCHEMA,
             "feature_count":len(FEATURE_COLUMNS),
             "orderflow_policy":"CONDITIONAL_PROXY_AWARE",
-            "context_policy":"CALIBRATION_SUBWINDOW_STABILITY",
+            "context_policy":"CALIBRATION_SUBWINDOW_PLUS_DIRECTIONAL_WALK_FORWARD_STABILITY",
             "dataset_rows":state.get("dataset_rows"),
             "history":metrics.get("history") or state.get("history"),
             "required_history":(
@@ -76,10 +77,15 @@ def v124_training_summary():
             "temporal_stability":temporal.get("status"),
             "temporal_summary":temporal.get("summary"),
             "high_winrate_stability":temporal.get("high_winrate_stability"),
+            "directional_stability":directional,
+            "stable_sides":temporal.get("stable_sides") or [],
+            "directional_gate_passed":bool(temporal.get("directional_gate_passed",False)),
             "sides":{
                 side:{
                     "threshold_mode":((side_models.get(side) or {}).get("threshold_policy") or {}).get("mode"),
                     "stable_context_counts":((side_models.get(side) or {}).get("threshold_policy") or {}).get("stable_context_counts"),
+                    "directional_gate_passed":(side_models.get(side) or {}).get("directional_gate_passed"),
+                    "directional_stability":(side_models.get(side) or {}).get("directional_stability") or directional.get(side),
                     "recovery_used":((side_models.get(side) or {}).get("threshold_policy") or {}).get("recovery_used"),
                     "hybrid_mode":((side_models.get(side) or {}).get("hybrid_gate") or {}).get("mode"),
                     "meta_mode":((side_models.get(side) or {}).get("meta_precision") or {}).get("mode"),
@@ -93,7 +99,7 @@ def v124_training_summary():
 
 
 @app.middleware("http")
-async def v124_runtime_labels(request,call_next):
+async def v125_runtime_labels(request,call_next):
     response=await call_next(request)
     content_type=response.headers.get("content-type","")
 
@@ -121,27 +127,31 @@ async def v124_runtime_labels(request,call_next):
     async for chunk in response.body_iterator:
         body+=chunk
     text=body.decode("utf-8",errors="replace")
-    for old in ("V0.11.4","V0.12.0","V0.12.1","V0.12.2","V0.12.3"):
-        text=text.replace(old,"V0.12.4")
+    for old in ("V0.11.4","V0.12.0","V0.12.1","V0.12.2","V0.12.3","V0.12.4"):
+        text=text.replace(old,"V0.12.5")
     text=text.replace(
         "Hybrid BUY/SELL: LightGBM + XGBoost + Linear Regression + Offline Q-Learning.",
-        "Deep-history RR 1:2: ML + SMC + Price Action + conditional Order Flow + Stable Regime/Session Context."
+        "RR 1:2 deep-history ML + SMC + Price Action + conditional Order Flow + Directional Stability."
     )
     text=text.replace(
         "90-day Coinbase training with linear expected-R and offline reinforcement-learning confirmation.",
-        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow and stable-context validation."
+        "180-day Coinbase training with causal SMC, Price Action, proxy-aware Order Flow and development-only BUY/SELL stability gating."
     )
     text=text.replace(
-        "90-day Coinbase training with causal SMC, Price Action, proxy-aware Order Flow, regime context and strict holdout validation.",
-        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow, four-fold temporal diagnostics and stable-context validation."
+        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow and stable-context validation.",
+        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow, stable context and directional walk-forward validation."
     )
     text=text.replace(
-        "High-winrate RR 1:2: ML + SMC + Regime + Price Action + conditional Order Flow + Meta Precision.",
-        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Stable Context + Meta Precision."
+        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow, four-fold temporal diagnostics and stable-context validation.",
+        "180-day Coinbase deep-history training with four-fold temporal diagnostics and independent BUY/SELL stability gating."
     )
     text=text.replace(
-        "High-winrate RR 1:2: ML + SMC + Regime + Price Action + conditional Order Flow + Adaptive Coverage.",
-        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Stable Context + Adaptive Coverage."
+        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Stable Context + Meta Precision.",
+        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Directional Stability + Meta Precision."
+    )
+    text=text.replace(
+        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Stable Context + Adaptive Coverage.",
+        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Directional Stability + Adaptive Coverage."
     )
     headers=dict(response.headers)
     headers.pop("content-length",None)
