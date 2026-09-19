@@ -40,9 +40,9 @@ def _high_winrate_gate_adapter(
 
 
 class TrainingManager(V122TrainingManager):
-    """V0.12.3 deep-history + stable-context research trainer."""
+    """V0.12.4 deep-history + stable-context research trainer."""
 
-    def __init__(self, shadow_service, version="v0.12.3"):
+    def __init__(self, shadow_service, version="v0.12.4"):
         super().__init__(shadow_service,version=version)
         self.state["XAUUSD"]["required_history"]=dict(XAU_DEEP_HISTORY_REQUIRED)
         self.state["BTCUSD"]["required_history_days"]=BTC_DEEP_HISTORY_DAYS
@@ -82,7 +82,7 @@ class TrainingManager(V122TrainingManager):
             return
 
         self.xau_task=asyncio.create_task(
-            self._train_xau(),name="xau-model-training-v0123"
+            self._train_xau(),name="xau-model-training-v0124"
         )
 
     async def _fit_validate(self,symbol,dataset,rr,horizon,source,history=None):
@@ -147,7 +147,7 @@ class TrainingManager(V122TrainingManager):
             }
 
         payload={
-            "event":"V0.12.3_TRAINING_RESULT",
+            "event":"V0.12.4_TRAINING_RESULT",
             "symbol":symbol,
             "status":state.get("status"),
             "dataset_rows":state.get("dataset_rows"),
