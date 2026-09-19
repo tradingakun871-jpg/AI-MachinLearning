@@ -1,16 +1,17 @@
 #property strict
-#property version   "1.010"
+#property version   "1.020"
 #property script_show_inputs
-#property description "One-time XAUUSD historical backfill to AI Market Intelligence. Sends closed M3/M5/M15 candles only."
+#property description "Deep XAUUSD historical backfill for AI Market Intelligence V0.12.3. Sends closed M3/M5/M15 candles only."
 
 input string ApiBaseUrl="https://ai-machine-learning-production.up.railway.app";
 input string BridgeToken="change-me";
 input string MarketSymbolOverride="";
 input string ApiSymbol="XAUUSD";
-input int M3Bars=15000;
-input int M5Bars=9000;
-input int M15Bars=3000;
-input int BatchSize=150;
+input int M3Bars=50000;
+input int M5Bars=30000;
+input int M15Bars=10000;
+input int BatchSize=300;
+input int RetryCount=3;
 
 string JsonEscape(string s)
 {
@@ -33,6 +34,34 @@ string IsoUtc(datetime brokerTime)
    return StringFormat("%04d-%02d-%02dT%02d:%02d:%02dZ",x.year,x.mon,x.day,x.hour,x.min,x.sec);
 }
 
+bool PostJson(string endpoint,string body,string label)
+{
+   char data[],result[];
+   string responseHeaders;
+   string headers="Content-Type: application/json\r\nX-Bridge-Token: "+BridgeToken+"\r\n";
+   StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
+   if(ArraySize(data)>0) ArrayResize(data,ArraySize(data)-1);
+
+   int retries=(RetryCount<1?1:RetryCount);
+   for(int attempt=1;attempt<=retries;attempt++)
+   {
+      ArrayResize(result,0);
+      responseHeaders="";
+      ResetLastError();
+      int code=WebRequest("POST",ApiBaseUrl+endpoint,headers,45000,data,result,responseHeaders);
+      if(code>=200 && code<300)
+      {
+         Print(label," OK HTTP ",code);
+         return true;
+      }
+
+      Print(label," FAILED attempt=",attempt,"/",retries," HTTP=",code,
+            " MT5 error=",GetLastError()," response=",CharArrayToString(result,0,-1,CP_UTF8));
+      if(attempt<retries) Sleep(1000*attempt);
+   }
+   return false;
+}
+
 bool PostBatch(string tfName,MqlRates &rates[],int fromIndex,int toIndex)
 {
    string body="{\"symbol\":\""+JsonEscape(ApiSymbol)+"\",\"timeframe\":\""+tfName+"\",\"candles\":[";
@@ -51,27 +80,19 @@ bool PostBatch(string tfName,MqlRates &rates[],int fromIndex,int toIndex)
    }
    body+="]}";
 
-   char data[],result[];
-   string responseHeaders;
-   string headers="Content-Type: application/json\r\nX-Bridge-Token: "+BridgeToken+"\r\n";
-   StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
-   if(ArraySize(data)>0) ArrayResize(data,ArraySize(data)-1);
-
-   ResetLastError();
-   int code=WebRequest("POST",ApiBaseUrl+"/api/history/batch",headers,30000,data,result,responseHeaders);
-   if(code>=200 && code<300)
-   {
-      Print("History backfill OK ",tfName," rows=",toIndex-fromIndex+1," HTTP ",code);
-      return true;
-   }
-
-   Print("History backfill FAILED ",tfName," HTTP=",code," MT5 error=",GetLastError()," response=",CharArrayToString(result,0,-1,CP_UTF8));
-   return false;
+   string label="History backfill "+tfName+" rows="+IntegerToString(toIndex-fromIndex+1);
+   return PostJson("/api/history/batch",body,label);
 }
 
 bool SendTimeframe(ENUM_TIMEFRAMES tf,string tfName,int requestedBars)
 {
    string marketSymbol=(MarketSymbolOverride==""?_Symbol:MarketSymbolOverride);
+   if(!SymbolSelect(marketSymbol,true))
+   {
+      Print("SymbolSelect failed symbol=",marketSymbol," error=",GetLastError());
+      return false;
+   }
+
    MqlRates rates[];
    ArraySetAsSeries(rates,false);
 
@@ -83,19 +104,33 @@ bool SendTimeframe(ENUM_TIMEFRAMES tf,string tfName,int requestedBars)
       return false;
    }
 
-   int batch=(BatchSize<20?20:BatchSize);
-   Print("Starting ",tfName," backfill. copied=",copied," batch=",batch);
+   int batch=(BatchSize<50?50:MathMin(BatchSize,500));
+   int totalBatches=(copied+batch-1)/batch;
+   Print("Starting ",tfName," deep backfill. requested=",requestedBars,
+         " copied=",copied," batch=",batch," total_batches=",totalBatches);
 
+   int batchNo=0;
    for(int start=0;start<copied;start+=batch)
    {
       int finish=MathMin(start+batch-1,copied-1);
+      batchNo++;
       if(!PostBatch(tfName,rates,start,finish))
          return false;
-      Sleep(150);
+
+      double pct=100.0*(double)(finish+1)/(double)copied;
+      if(batchNo==1 || batchNo==totalBatches || batchNo%10==0)
+         Print(tfName," progress ",DoubleToString(pct,1),"% (",finish+1,"/",copied,")");
+      Sleep(120);
    }
 
-   Print("Completed ",tfName," backfill rows=",copied);
+   Print("Completed ",tfName," deep backfill rows=",copied);
    return true;
+}
+
+bool NotifyComplete()
+{
+   string body="{\"symbol\":\""+JsonEscape(ApiSymbol)+"\"}";
+   return PostJson("/api/history/complete",body,"History completion notification");
 }
 
 void OnStart()
@@ -106,12 +141,20 @@ void OnStart()
       return;
    }
 
+   Print("V0.12.3 DEEP HISTORY target: M3=",M3Bars,
+         " M5=",M5Bars," M15=",M15Bars);
+
    bool ok15=SendTimeframe(PERIOD_M15,"M15",M15Bars);
    bool ok5 =SendTimeframe(PERIOD_M5 ,"M5" ,M5Bars);
    bool ok3 =SendTimeframe(PERIOD_M3 ,"M3" ,M3Bars);
 
    if(ok15 && ok5 && ok3)
-      Print("XAUUSD historical backfill COMPLETE. Server can now start XAU model training.");
+   {
+      if(NotifyComplete())
+         Print("XAUUSD DEEP historical backfill COMPLETE. Server was notified to validate/start V0.12.3 training.");
+      else
+         Print("Candles uploaded, but completion notification failed. Re-run script or call completion after connection recovers.");
+   }
    else
-      Print("XAUUSD historical backfill stopped with error. Check Experts/Journal and WebRequest whitelist.");
+      Print("XAUUSD historical backfill stopped with error. Check Experts/Journal, broker history availability, and WebRequest whitelist.");
 }
