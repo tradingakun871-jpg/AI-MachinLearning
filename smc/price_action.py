@@ -83,6 +83,11 @@ def add_price_action_features(df: pd.DataFrame) -> pd.DataFrame:
         },
         index=d.index,
     )
-    d["pa_direction"] = np.sign(components.sum(axis=1)).astype(int)
+    score = components.sum(axis=1)
+    # Ignore weak candle noise. Direction only becomes context when a strong
+    # body or one of the named price-action events creates meaningful evidence.
+    d["pa_direction"] = np.where(
+        score >= 0.35, 1, np.where(score <= -0.35, -1, 0)
+    ).astype(int)
     d["pa_strength"] = (components.abs().sum(axis=1) / 5.0).clip(0, 1).fillna(0.0)
     return d
