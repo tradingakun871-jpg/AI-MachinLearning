@@ -8,6 +8,27 @@ def _iso(value):
     return value.isoformat() if hasattr(value, "isoformat") else value
 
 
+def _side_summary(metrics, side):
+    info=(metrics.get("side_models") or {}).get(side) or {}
+    policy=info.get("threshold_policy") or {}
+    meta=info.get("meta_precision") or {}
+    return {
+        "test_trading":info.get("test_trading"),
+        "test_selected_rows":info.get("test_selected_rows"),
+        "test_coverage":info.get("test_coverage"),
+        "selected_features":info.get("selected_features"),
+        "threshold_mode":policy.get("mode"),
+        "stable_context_counts":policy.get("stable_context_counts"),
+        "allowed_regimes":policy.get("allowed_regimes"),
+        "allowed_sessions":policy.get("allowed_sessions"),
+        "allowed_joint_contexts":policy.get("allowed_joint_contexts"),
+        "recovery_used":policy.get("recovery_used"),
+        "hybrid_mode":(info.get("hybrid_gate") or {}).get("mode"),
+        "meta_mode":meta.get("mode"),
+        "meta_policy_mode":(meta.get("policy") or {}).get("mode"),
+    }
+
+
 def _training(cur, symbol):
     cur.execute(
         """
@@ -23,9 +44,9 @@ def _training(cur, symbol):
     if not row:
         return None
     metrics=row[5] if isinstance(row[5],dict) else {}
-    trading=(metrics or {}).get("trading") or {}
-    temporal=(metrics or {}).get("temporal_stability") or {}
-    gate=(metrics or {}).get("quality_gate") or {}
+    trading=metrics.get("trading") or {}
+    temporal=metrics.get("temporal_stability") or {}
+    gate=metrics.get("quality_gate") or {}
     checks=gate.get("checks") or {}
     fold_rows=[]
     for item in (temporal.get("folds") or []):
@@ -39,13 +60,19 @@ def _training(cur, symbol):
             "profit_factor":trade.get("profit_factor"),
             "max_drawdown_r":trade.get("max_drawdown_r"),
         })
+    importance=[]
+    for item in (metrics.get("feature_importance") or [])[:25]:
+        importance.append({
+            "feature":item.get("feature"),
+            "importance":item.get("importance"),
+        })
     return {
         "status":row[0],
         "version":row[1],
         "dataset_rows":row[2],
         "error":row[3],
         "recorded_at":_iso(row[4]),
-        "rr":(metrics or {}).get("rr"),
+        "rr":metrics.get("rr"),
         "trading":{
             "trades":trading.get("trades"),
             "win_rate":trading.get("win_rate"),
@@ -65,6 +92,11 @@ def _training(cur, symbol):
             "summary":temporal.get("summary"),
             "high_winrate_stability":temporal.get("high_winrate_stability"),
             "folds":fold_rows,
+        },
+        "feature_importance":importance,
+        "sides":{
+            "BUY":_side_summary(metrics,"BUY"),
+            "SELL":_side_summary(metrics,"SELL"),
         },
     }
 
