@@ -7,9 +7,28 @@ from ml.quality import apply_threshold_policy, learn_threshold_policy
 from ml.regime import RegimeClassifier
 
 
+def _finite_values(values):
+    out=[]
+    for value in values:
+        if value is None:
+            continue
+        try:
+            number=float(value)
+        except (TypeError,ValueError):
+            continue
+        if np.isfinite(number):
+            out.append(number)
+    return out
+
+
 def _median(values):
-    vals=[float(v) for v in values if v is not None and np.isfinite(v)]
+    vals=_finite_values(values)
     return float(np.median(vals)) if vals else None
+
+
+def _minimum(values):
+    vals=_finite_values(values)
+    return float(min(vals)) if vals else None
 
 
 def evaluate_temporal_stability(
@@ -173,15 +192,20 @@ def evaluate_temporal_stability(
     pfs=[row["trading"].get("profit_factor") for row in fold_rows]
     exps=[row["trading"].get("expectancy_r") for row in fold_rows]
     dds=[row["trading"].get("max_drawdown_r") for row in fold_rows]
+    zero_trade_folds=sum(
+        1 for row in fold_rows
+        if int((row.get("trading") or {}).get("trades",0) or 0)==0
+    )
 
     summary={
         "fold_count":int(len(fold_rows)),
         "passed_folds":int(passed_folds),
         "positive_expectancy_folds":int(profitable),
+        "zero_trade_folds":int(zero_trade_folds),
         "median_auc":_median(aucs),
         "median_profit_factor":_median(pfs),
         "median_expectancy_r":_median(exps),
-        "worst_drawdown_r":float(min(dds)) if dds else None,
+        "worst_drawdown_r":_minimum(dds),
     }
 
     passed=bool(
