@@ -72,7 +72,7 @@ class CoinbaseBTCFeed:
             timeout=20.0,
             headers={
                 "Accept": "application/json",
-                "User-Agent": "AI-Market-Intelligence/0.11.1",
+                "User-Agent": "AI-Market-Intelligence/0.12.3",
             },
         ) as client:
             m1 = await self._fetch_candles(client, 60, one_minute_points)
@@ -112,6 +112,39 @@ class CoinbaseBTCFeed:
             "analysis": analysis,
         }
 
+    async def _fetch_page(self, client, granularity, start, end, retries=5):
+        last_error = None
+        for attempt in range(retries):
+            try:
+                response = await client.get(
+                    f"/products/{self.PRODUCT_ID}/candles",
+                    params={
+                        "granularity": granularity,
+                        "start": start.isoformat().replace("+00:00", "Z"),
+                        "end": end.isoformat().replace("+00:00", "Z"),
+                    },
+                )
+                if response.status_code == 429:
+                    retry_after = response.headers.get("retry-after")
+                    delay = float(retry_after) if retry_after else min(3.0, 0.35 * (attempt + 1))
+                    await asyncio.sleep(max(0.35, delay))
+                    continue
+                if response.status_code >= 500:
+                    await asyncio.sleep(min(3.0, 0.30 * (2 ** attempt)))
+                    continue
+                response.raise_for_status()
+                rows = response.json()
+                if not isinstance(rows, list):
+                    raise RuntimeError("unexpected Coinbase candle response")
+                return rows
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                last_error = exc
+                if attempt < retries - 1:
+                    await asyncio.sleep(min(3.0, 0.30 * (2 ** attempt)))
+        raise RuntimeError(f"Coinbase candle page failed after {retries} attempts: {last_error}")
+
     async def _fetch_candles(self, client, granularity, desired_points):
         max_per_request = 300
         pages = max(1, math.ceil(desired_points / max_per_request))
@@ -119,20 +152,9 @@ class CoinbaseBTCFeed:
         end = now.replace(second=0, microsecond=0)
         frames = []
 
-        for _ in range(pages):
+        for page in range(pages):
             start = end - timedelta(seconds=granularity * max_per_request)
-            response = await client.get(
-                f"/products/{self.PRODUCT_ID}/candles",
-                params={
-                    "granularity": granularity,
-                    "start": start.isoformat().replace("+00:00", "Z"),
-                    "end": end.isoformat().replace("+00:00", "Z"),
-                },
-            )
-            response.raise_for_status()
-            rows = response.json()
-            if not isinstance(rows, list):
-                raise RuntimeError("unexpected Coinbase candle response")
+            rows = await self._fetch_page(client, granularity, start, end)
 
             parsed = []
             for row in rows:
@@ -153,6 +175,11 @@ class CoinbaseBTCFeed:
             if parsed:
                 frames.append(pd.DataFrame(parsed))
             end = start
+
+            # Public deep-history training can require hundreds of pages. A
+            # small delay keeps the research downloader below burst limits.
+            if page < pages - 1:
+                await asyncio.sleep(0.12)
 
         if not frames:
             return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume", "spread"])
