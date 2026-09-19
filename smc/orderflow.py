@@ -9,11 +9,15 @@ def _numeric(frame: pd.DataFrame, name: str, default=0.0) -> pd.Series:
 
 
 def _volume_source(d: pd.DataFrame):
-    """Return volume series, quality score, and whether source is only a proxy."""
+    """Return volume series and reliability for directional-flow inference.
+
+    Candle volume alone never proves aggressor direction, so real_volume,
+    generic OHLCV volume, and broker tick_volume are all marked as proxies.
+    """
     if "real_volume" in d and _numeric(d, "real_volume").gt(0).any():
-        return _numeric(d, "real_volume"), 0.90, False
+        return _numeric(d, "real_volume"), 0.70, True
     if "volume" in d and _numeric(d, "volume").gt(0).any():
-        return _numeric(d, "volume"), 0.75, False
+        return _numeric(d, "volume"), 0.60, True
     if "tick_volume" in d and _numeric(d, "tick_volume").gt(0).any():
         return _numeric(d, "tick_volume"), 0.45, True
     return pd.Series(0.0, index=d.index), 0.0, True
@@ -31,7 +35,7 @@ def add_orderflow_features(df: pd.DataFrame) -> pd.DataFrame:
     l = _numeric(d, "low")
     c = _numeric(d, "close")
     rng = (h - l).abs().replace(0, np.nan)
-    volume, source_quality, tick_proxy = _volume_source(d)
+    volume, source_quality, volume_is_proxy = _volume_source(d)
 
     has_buy_sell = (
         "buy_volume" in d
@@ -52,6 +56,8 @@ def add_orderflow_features(df: pd.DataFrame) -> pd.DataFrame:
     elif has_delta:
         delta_raw = _numeric(d, "volume_delta")
         scale = volume.rolling(30, min_periods=8).mean().replace(0, np.nan)
+        if not volume.gt(0).any():
+            scale = delta_raw.abs().rolling(30, min_periods=8).mean().replace(0, np.nan)
         delta_ratio = (delta_raw / scale).clip(-1, 1).fillna(0.0)
         source_quality = max(source_quality, 0.95)
         is_proxy = 0
@@ -60,7 +66,7 @@ def add_orderflow_features(df: pd.DataFrame) -> pd.DataFrame:
         delta_raw = close_location_value * volume
         scale = volume.rolling(30, min_periods=8).mean().replace(0, np.nan)
         delta_ratio = (delta_raw / scale).clip(-1, 1).fillna(0.0)
-        is_proxy = 1
+        is_proxy = int(volume_is_proxy)
 
     available = int(volume.gt(0).any() or has_buy_sell or has_delta)
     d["orderflow_available"] = float(available)
