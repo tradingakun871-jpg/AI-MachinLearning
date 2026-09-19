@@ -9,6 +9,7 @@ from live.shadow import ShadowJournal
 from ml.setup_features import add_session_name, add_setup_features, structural_stop_distance
 from ml.quality import threshold_for_context
 from ml.hybrid import apply_hybrid_gate
+from ml.meta_precision import meta_matrix
 
 
 class LiveInference:
@@ -161,7 +162,48 @@ class LiveInference:
             np.asarray([rl_take]),
         )
         hybrid_take=bool(hybrid_mask[0])
-        qualified=bool(hybrid_take and expected_r>0)
+
+        meta_cfg=side_bundle.get("meta_precision") or {}
+        meta_policy=meta_cfg.get("policy") or {}
+        meta_mode=meta_policy.get("mode","BYPASS")
+        meta_probability=None
+        meta_threshold=meta_policy.get("threshold")
+        meta_take=True
+        if meta_mode=="META_VETO":
+            meta_model=meta_cfg.get("model")
+            row_features=meta_cfg.get("row_features") or []
+            meta_missing=[name for name in row_features if name not in row]
+            if meta_model is None or linear_expected_r is None or rl_advantage is None:
+                return {
+                    "status":"META_FILTER_NOT_READY",
+                    "symbol":symbol,
+                    "side":side,
+                    "mode":"SHADOW_RESEARCH",
+                    "model_version":version,
+                }
+            if meta_missing:
+                return {
+                    "status":"META_FEATURE_MISMATCH",
+                    "missing":meta_missing,
+                    "symbol":symbol,
+                    "side":side,
+                    "mode":"SHADOW_RESEARCH",
+                    "model_version":version,
+                }
+            mx=meta_matrix(
+                row,
+                np.asarray([p],dtype=float),
+                np.asarray([linear_expected_r],dtype=float),
+                np.asarray([rl_advantage],dtype=float),
+                row_features,
+            )
+            meta_probability=float(meta_model.predict_proba(mx)[0])
+            meta_take=bool(
+                meta_threshold is not None
+                and meta_probability>=float(meta_threshold)
+            )
+
+        qualified=bool(hybrid_take and meta_take and expected_r>0)
 
         event_row={
             "status":"OK",
@@ -172,16 +214,20 @@ class LiveInference:
             "expected_r":round(expected_r,4),
             "linear_expected_r":None if linear_expected_r is None else round(linear_expected_r,4),
             "rl_advantage":None if rl_advantage is None else round(rl_advantage,4),
+            "meta_probability":None if meta_probability is None else round(meta_probability,4),
             "supervised_confirm":supervised_take,
             "linear_confirm":linear_take,
             "rl_confirm":rl_take,
+            "meta_confirm":meta_take,
             "hybrid_gate":hybrid_mode,
+            "meta_gate":meta_mode,
             "regime":int(row.regime.iloc[0]),
             "session":session,
             "smc_confluence":int(row.smc_confluence.iloc[0]),
             "htf_alignment":int(row.htf_alignment.iloc[0]),
             "threshold":round(threshold,4),
-            "threshold_policy":"HYBRID_LINEAR_RL",
+            "meta_threshold":None if meta_threshold is None else round(float(meta_threshold),4),
+            "threshold_policy":"HYBRID_LINEAR_RL_META",
             "qualified":qualified,
             "quality_gate":"PASSED",
             "mode":"SHADOW_RESEARCH",
