@@ -49,14 +49,14 @@ def _restore_env(name,previous):
 
 
 class TrainingManager(V122TrainingManager):
-    """V0.12.5 deep-history trainer with directional walk-forward gating.
+    """V0.12.6 deep-history strict-precision directional trainer.
 
-    RR is forced to 1:2 for BOTH label construction and downstream validation.
-    BUY/SELL activation is decided only from pre-holdout walk-forward evidence.
-    The untouched final holdout never decides whether a direction is enabled.
+    RR is fixed at 1:2 from label construction through validation. Calibration
+    recovery contexts are disabled by ml.high_winrate_v125; BUY/SELL activation
+    is decided only from development walk-forward evidence, never final holdout.
     """
 
-    def __init__(self, shadow_service, version="v0.12.5"):
+    def __init__(self, shadow_service, version="v0.12.6"):
         super().__init__(shadow_service,version=version)
         self.state["XAUUSD"]["required_history"]=dict(XAU_DEEP_HISTORY_REQUIRED)
         self.state["BTCUSD"]["required_history_days"]=BTC_DEEP_HISTORY_DAYS
@@ -101,7 +101,7 @@ class TrainingManager(V122TrainingManager):
             return
 
         self.xau_task=asyncio.create_task(
-            self._train_xau(),name="xau-model-training-v0125"
+            self._train_xau(),name="xau-model-training-v0126"
         )
 
     async def _fit_side(self,side,direction,train,cal,test,features,rr):
@@ -117,9 +117,6 @@ class TrainingManager(V122TrainingManager):
         result["metrics"]["directional_stability"]=directional
         result["metrics"]["directional_gate_passed"]=directional_pass
 
-        # The side gate is development-only. If a direction is unstable, do not
-        # let it contribute any final-holdout trades. Probabilities are retained
-        # for diagnostics, but selection is forced to SKIP.
         if not directional_pass:
             result["test_mask"]=np.zeros(len(result["test_mask"]),dtype=bool)
             result["metrics"]["test_selected_rows"]=0
@@ -129,8 +126,6 @@ class TrainingManager(V122TrainingManager):
         return result
 
     async def _fit_validate(self,symbol,dataset,rr,horizon,source,history=None):
-        # Ignore inherited/environment RR here as a second guard. The dataset is
-        # built under the same TARGET_RR in _train_btc/_train_xau below.
         rr=TARGET_RR
         old_policy=base_train.learn_threshold_policy
         old_gate=base_train.quality_gate_from_selection
@@ -206,6 +201,8 @@ class TrainingManager(V122TrainingManager):
                 "directional_gate_passed":info.get("directional_gate_passed"),
                 "directional_stability":info.get("directional_stability"),
                 "recovery_used":threshold.get("recovery_used"),
+                "recovery_allowed":threshold.get("recovery_allowed"),
+                "strict_precision_requirements":threshold.get("strict_precision_requirements"),
                 "hybrid_mode":((info.get("hybrid_gate") or {}).get("mode")),
                 "meta_mode":((info.get("meta_precision") or {}).get("mode")),
                 "test_selected_rows":info.get("test_selected_rows"),
@@ -214,7 +211,7 @@ class TrainingManager(V122TrainingManager):
             }
 
         payload={
-            "event":"V0.12.5_TRAINING_RESULT",
+            "event":"V0.12.6_TRAINING_RESULT",
             "symbol":symbol,
             "status":state.get("status"),
             "dataset_rows":state.get("dataset_rows"),
