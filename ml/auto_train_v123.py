@@ -9,7 +9,7 @@ import ml.stability as stability_module
 from app.database import market_history_status
 from ml.auto_train import TrainingManager as BaseTrainingManager
 from ml.auto_train_v122 import TrainingManager as V122TrainingManager
-from ml.high_winrate_v123 import (
+from ml.high_winrate_v125 import (
     TARGET_RR,
     evaluate_high_winrate_stability,
     high_winrate_quality_gate,
