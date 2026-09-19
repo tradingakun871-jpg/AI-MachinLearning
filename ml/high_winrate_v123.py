@@ -24,21 +24,20 @@ def _segment_rows(work,parts=3):
 
 def _stable_threshold(work,probability,threshold,rr=TARGET_RR,group_col=None,group_key=None):
     probe=work.copy()
-    probe["_p_v123"]=np.asarray(probability,dtype=float)
+    probe["_p_v124"]=np.asarray(probability,dtype=float)
     segments=_segment_rows(probe,3)
     rows=[]
-    pooled_mask=np.zeros(len(probe),dtype=bool)
 
     for segment in segments:
         group_mask=np.ones(len(segment),dtype=bool)
         if group_col is not None:
             group_mask=segment[group_col].astype(str).to_numpy()==str(group_key)
-        take=group_mask & (segment["_p_v123"].to_numpy(dtype=float)>=float(threshold))
+        take=group_mask & (segment["_p_v124"].to_numpy(dtype=float)>=float(threshold))
         trades=int(np.sum(take))
         metrics=(
             trading_metrics(
                 segment.loc[take,"label"],
-                segment.loc[take,"_p_v123"],
+                segment.loc[take,"_p_v124"],
                 threshold=0.0,
                 rr=rr,
             )
@@ -56,11 +55,11 @@ def _stable_threshold(work,probability,threshold,rr=TARGET_RR,group_col=None,gro
         pooled_group=np.ones(len(probe),dtype=bool)
     else:
         pooled_group=probe[group_col].astype(str).to_numpy()==str(group_key)
-    pooled_take=pooled_group & (probe["_p_v123"].to_numpy(dtype=float)>=float(threshold))
+    pooled_take=pooled_group & (probe["_p_v124"].to_numpy(dtype=float)>=float(threshold))
     pooled=(
         trading_metrics(
             probe.loc[pooled_take,"label"],
-            probe.loc[pooled_take,"_p_v123"],
+            probe.loc[pooled_take,"_p_v124"],
             threshold=0.0,
             rr=rr,
         )
@@ -119,9 +118,9 @@ def _prune_context_map(work,probability,rr,column,thresholds):
 
 
 def learn_high_winrate_policy(frame,probability,rr=TARGET_RR):
-    """V0.12.3 calibration policy with subwindow context stability.
+    """V0.12.4 calibration policy with chronological context stability.
 
-    Thresholds are still learned only from calibration data. V0.12.3 then asks
+    Thresholds are still learned only from calibration data. V0.12.4 then asks
     whether the same regime/session edge survives multiple chronological slices
     before that context is allowed to reach the untouched holdout.
     """
@@ -158,7 +157,7 @@ def learn_high_winrate_policy(frame,probability,rr=TARGET_RR):
     )
     policy.update({
         "mode":mode,
-        "version":"V0.12.3",
+        "version":"V0.12.4",
         "selection_statistic":"STRICT_FIRST_RECOVERY_PLUS_CALIBRATION_SUBWINDOW_STABILITY",
         "global_threshold":global_threshold,
         "regime_thresholds":regime_thresholds,
@@ -225,10 +224,11 @@ def high_winrate_quality_gate(
     )
     objective=gate.get("objective") or {}
     objective.update({
-        "version":"V0.12.3",
+        "version":"V0.12.4",
         "context_policy":"CALIBRATION_SUBWINDOW_STABILITY",
         "walk_forward_folds_target":4,
         "deep_history_mode":True,
+        "feature_schema":"SMC_PA_ORDERFLOW_REGIME_V1",
         "final_win_rate_target":FINAL_WIN_RATE_TARGET,
         "final_win_rate_wilson_lcb_min":FINAL_WILSON_LCB_MIN,
         "final_expectancy_target_r":FINAL_EXPECTANCY_TARGET,
