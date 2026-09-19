@@ -39,13 +39,27 @@ def _high_winrate_gate_adapter(
     )
 
 
+def _restore_env(name,previous):
+    if previous is None:
+        os.environ.pop(name,None)
+    else:
+        os.environ[name]=previous
+
+
 class TrainingManager(V122TrainingManager):
-    """V0.12.4 deep-history + stable-context research trainer."""
+    """V0.12.4 deep-history + stable-context research trainer.
+
+    RR is forced to 1:2 for BOTH label construction and all downstream
+    calibration/validation. This prevents a 3R-labeled dataset from being
+    evaluated as a 2R strategy when Railway DEFAULT_RR is configured differently.
+    """
 
     def __init__(self, shadow_service, version="v0.12.4"):
         super().__init__(shadow_service,version=version)
         self.state["XAUUSD"]["required_history"]=dict(XAU_DEEP_HISTORY_REQUIRED)
         self.state["BTCUSD"]["required_history_days"]=BTC_DEEP_HISTORY_DAYS
+        self.state["BTCUSD"]["label_rr"]=TARGET_RR
+        self.state["XAUUSD"]["label_rr"]=TARGET_RR
 
     async def start_xau(self,force=False):
         if not force and self._restore_existing("XAUUSD"):
@@ -62,6 +76,7 @@ class TrainingManager(V122TrainingManager):
                 status="WAITING_FOR_DEEP_MT5_HISTORY",
                 history=history,
                 required_history=dict(XAU_DEEP_HISTORY_REQUIRED),
+                label_rr=TARGET_RR,
                 error=None,
             )
             return
@@ -78,6 +93,7 @@ class TrainingManager(V122TrainingManager):
                 status="WAITING_FOR_BTC_TRAINING",
                 history=history,
                 required_history=dict(XAU_DEEP_HISTORY_REQUIRED),
+                label_rr=TARGET_RR,
             )
             return
 
@@ -86,6 +102,9 @@ class TrainingManager(V122TrainingManager):
         )
 
     async def _fit_validate(self,symbol,dataset,rr,horizon,source,history=None):
+        # Ignore inherited/environment RR here as a second guard. The dataset is
+        # built under the same TARGET_RR in _train_btc/_train_xau below.
+        rr=TARGET_RR
         old_policy=base_train.learn_threshold_policy
         old_gate=base_train.quality_gate_from_selection
         old_stability_policy=stability_module.learn_threshold_policy
@@ -105,19 +124,30 @@ class TrainingManager(V122TrainingManager):
             base_train.evaluate_temporal_stability=old_stability_eval
 
     async def _train_btc(self):
-        previous=os.environ.get("BTC_TRAIN_DAYS")
+        previous_days=os.environ.get("BTC_TRAIN_DAYS")
+        previous_rr=os.environ.get("DEFAULT_RR")
         try:
-            requested=int(previous) if previous is not None else 0
+            requested=int(previous_days) if previous_days is not None else 0
         except Exception:
             requested=0
+
         os.environ["BTC_TRAIN_DAYS"]=str(max(BTC_DEEP_HISTORY_DAYS,requested))
+        os.environ["DEFAULT_RR"]=str(TARGET_RR)
+        self.state["BTCUSD"]["label_rr"]=TARGET_RR
         try:
             await super()._train_btc()
         finally:
-            if previous is None:
-                os.environ.pop("BTC_TRAIN_DAYS",None)
-            else:
-                os.environ["BTC_TRAIN_DAYS"]=previous
+            _restore_env("BTC_TRAIN_DAYS",previous_days)
+            _restore_env("DEFAULT_RR",previous_rr)
+
+    async def _train_xau(self):
+        previous_rr=os.environ.get("DEFAULT_RR")
+        os.environ["DEFAULT_RR"]=str(TARGET_RR)
+        self.state["XAUUSD"]["label_rr"]=TARGET_RR
+        try:
+            await super()._train_xau()
+        finally:
+            _restore_env("DEFAULT_RR",previous_rr)
 
     def _log_training_result(self,symbol):
         state=self.state.get(symbol) or {}
@@ -154,6 +184,7 @@ class TrainingManager(V122TrainingManager):
             "history":history,
             "required_xau_history":XAU_DEEP_HISTORY_REQUIRED if symbol=="XAUUSD" else None,
             "required_btc_days":BTC_DEEP_HISTORY_DAYS if symbol=="BTCUSD" else None,
+            "label_rr":TARGET_RR,
             "error":state.get("error"),
             "quality":quality.get("status"),
             "failed_checks":failed,
