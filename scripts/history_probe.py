@@ -29,6 +29,20 @@ def _side_summary(metrics, side):
     }
 
 
+def _fold_side(item, side):
+    info=(item.get("sides") or {}).get(side) or {}
+    trade=info.get("trading") or {}
+    return {
+        "selected_rows":info.get("selected_rows"),
+        "policy_mode":info.get("policy_mode"),
+        "trades":trade.get("trades"),
+        "win_rate":trade.get("win_rate"),
+        "expectancy_r":trade.get("expectancy_r"),
+        "profit_factor":trade.get("profit_factor"),
+        "max_drawdown_r":trade.get("max_drawdown_r"),
+    }
+
+
 def _training(cur, symbol):
     cur.execute(
         """
@@ -59,6 +73,10 @@ def _training(cur, symbol):
             "expectancy_r":trade.get("expectancy_r"),
             "profit_factor":trade.get("profit_factor"),
             "max_drawdown_r":trade.get("max_drawdown_r"),
+            "sides":{
+                "BUY":_fold_side(item,"BUY"),
+                "SELL":_fold_side(item,"SELL"),
+            },
         })
     importance=[]
     for item in (metrics.get("feature_importance") or [])[:25]:
@@ -91,6 +109,7 @@ def _training(cur, symbol):
             "passed":temporal.get("passed"),
             "summary":temporal.get("summary"),
             "high_winrate_stability":temporal.get("high_winrate_stability"),
+            "directional_stability":temporal.get("directional_stability"),
             "folds":fold_rows,
         },
         "feature_importance":importance,
