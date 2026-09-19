@@ -16,4 +16,5 @@ def main():
 
 
 if __name__=="__main__":
+    # Read-only diagnostic: no inserts, updates, deletes, or training actions.
     main()
