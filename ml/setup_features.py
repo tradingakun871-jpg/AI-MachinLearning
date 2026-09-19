@@ -22,7 +22,12 @@ def signal_direction(frame: pd.DataFrame) -> pd.Series:
 
 
 def add_setup_features(frame: pd.DataFrame) -> pd.DataFrame:
-    """Add causal SMC setup features shared by training and live inference."""
+    """Add causal SMC + price-action + order-flow setup context.
+
+    SMC remains the event generator. Price Action and Order Flow are context
+    features first; they do not become hard entry vetoes until walk-forward
+    validation proves that doing so improves net expectancy and stability.
+    """
     d=frame.copy()
     direction=signal_direction(d)
     d["signal_direction"]=direction
@@ -37,11 +42,32 @@ def add_setup_features(frame: pd.DataFrame) -> pd.DataFrame:
     d["signal_ob"]=aligned("ob_direction")
     d["signal_fvg"]=aligned("fvg_direction")
 
+    d["signal_pa"]=aligned("pa_direction")
+    d["signal_pa_breakout"]=aligned("pa_breakout_direction")
+    d["signal_pa_rejection"]=aligned("pa_rejection_direction")
+    d["signal_orderflow"]=aligned("orderflow_direction")
+    if "orderflow_available" in d:
+        d["signal_orderflow"]=(
+            d["signal_orderflow"]
+            * pd.to_numeric(d["orderflow_available"],errors="coerce").fillna(0).astype(int)
+        )
+
     d["primary_structure_count"]=d[["signal_mss","signal_bos","signal_sweep"]].sum(axis=1)
     d["imbalance_count"]=d[["signal_ob","signal_fvg"]].sum(axis=1)
     d["smc_confluence"]=d[
         ["signal_mss","signal_bos","signal_sweep","signal_ob","signal_fvg"]
     ].sum(axis=1)
+    d["price_action_confluence"]=d[
+        ["signal_pa","signal_pa_breakout","signal_pa_rejection"]
+    ].sum(axis=1)
+    d["orderflow_confluence"]=d["signal_orderflow"]
+
+    of_quality=pd.to_numeric(d.get("orderflow_source_quality",0.0),errors="coerce").fillna(0.0)
+    d["context_confluence"]=(
+        d["smc_confluence"].astype(float)
+        +0.50*d["price_action_confluence"].astype(float)
+        +0.50*d["orderflow_confluence"].astype(float)*of_quality
+    )
 
     for tf in ("trend_m5","trend_m15"):
         if tf not in d:
@@ -62,8 +88,8 @@ def add_setup_features(frame: pd.DataFrame) -> pd.DataFrame:
         np.where(direction<0,(swing_hi-close).abs()/atr,np.nan)
     )
 
-    # Candidate means: a real structural event happened now. OB/FVG alone are
-    # context features and do not manufacture an entry event.
+    # Candidate still requires a real SMC structural event. PA/Order Flow are
+    # learned confirmations, not standalone signal generators.
     d["candidate"]=((direction!=0) & (d["primary_structure_count"]>0)).astype(int)
     return d
 
