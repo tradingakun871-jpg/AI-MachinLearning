@@ -9,6 +9,8 @@ from ml.stability import evaluate_temporal_stability
 
 TARGET_RR=2.0
 CALIBRATION_WIN_RATE_TARGET=0.42
+CALIBRATION_RECOVERY_WR_MIN=0.38
+CALIBRATION_RECOVERY_LCB_MIN=0.22
 FINAL_WIN_RATE_TARGET=0.45
 FINAL_EXPECTANCY_TARGET=0.20
 FINAL_PF_TARGET=1.30
@@ -20,8 +22,10 @@ def _candidate_thresholds(p,rr=TARGET_RR):
     p=p[np.isfinite(p)]
     if len(p)==0:
         return []
-    floor=max(break_even_probability(rr)+0.02,0.35)
-    quantiles=np.quantile(p,[.35,.45,.55,.65,.72,.78,.84,.89,.93,.96,.98,.99])
+    # RR 1:2 break-even is 33.3%. Keep a small probability buffer, but let the
+    # learned calibration statistics decide the actual threshold.
+    floor=max(break_even_probability(rr)+0.01,0.34)
+    quantiles=np.quantile(p,[.25,.35,.45,.55,.65,.72,.78,.84,.89,.93,.96,.98,.99])
     upper=min(.95,max(float(np.max(p)),floor))
     grid=np.arange(floor,upper+1e-9,.005)
     values=np.r_[grid,quantiles,[floor]]
@@ -29,6 +33,13 @@ def _candidate_thresholds(p,rr=TARGET_RR):
 
 
 def _select_threshold(y,p,rr=TARGET_RR,min_trades=None,min_coverage=.02,target_win_rate=CALIBRATION_WIN_RATE_TARGET):
+    """Select a calibration threshold with strict-first coverage recovery.
+
+    Strict tier requires Wilson 95% LCB above RR break-even. When calibration is
+    too small for that confidence requirement, an exploratory recovery tier is
+    allowed only if observed win rate, expectancy and PF are still positive.
+    The independent holdout gate remains strict and is never relaxed.
+    """
     y=np.asarray(y,dtype=int)
     p=np.asarray(p,dtype=float)
     if min_trades is None:
@@ -40,7 +51,7 @@ def _select_threshold(y,p,rr=TARGET_RR,min_trades=None,min_coverage=.02,target_w
         metrics=trading_metrics(y,p,threshold=float(threshold),rr=rr)
         trades=int(metrics.get("trades",0) or 0)
         coverage=float(trades/len(y)) if len(y) else 0.0
-        if trades<min_trades or coverage<min_coverage:
+        if trades<int(min_trades) or coverage<float(min_coverage):
             continue
         wr=float(metrics.get("win_rate",0.0) or 0.0)
         wins=int(round(wr*trades))
@@ -49,14 +60,14 @@ def _select_threshold(y,p,rr=TARGET_RR,min_trades=None,min_coverage=.02,target_w
         pf=metrics.get("profit_factor")
         pf_value=float(pf) if pf is not None and np.isfinite(pf) else 0.0
         dd=abs(float(metrics.get("max_drawdown_r",0.0) or 0.0))
-        precision_bonus=max(0.0,wr-target_win_rate)*8.0
+        precision_bonus=max(0.0,wr-target_win_rate)*7.0
         score=(
             4.0*lcb
             +2.0*wr
             +precision_bonus
-            +0.8*exp
+            +0.9*exp
             +0.08*pf_value
-            +0.06*math.sqrt(trades)
+            +0.08*math.sqrt(trades)*math.sqrt(max(coverage,1e-9))
             -0.015*dd
         )
         rows.append({
@@ -69,16 +80,42 @@ def _select_threshold(y,p,rr=TARGET_RR,min_trades=None,min_coverage=.02,target_w
             **metrics,
         })
 
-    profitable=[
+    strict=[
         row for row in rows
         if float(row.get("expectancy_r",-999))>0.10
         and row.get("profit_factor") is not None
         and float(row.get("profit_factor",0))>=1.15
         and float(row.get("wilson_lcb_95",0.0))>=break_even
     ]
-    high_precision=[row for row in profitable if float(row.get("win_rate",0.0) or 0.0)>=target_win_rate]
-    pool=high_precision if high_precision else profitable
-    selected=max(pool,key=lambda x:(x["score"],x["wilson_lcb_95"],x["trades"])) if pool else None
+    strict_target=[row for row in strict if float(row.get("win_rate",0.0) or 0.0)>=target_win_rate]
+    strict_pool=strict_target if strict_target else strict
+    selected=max(strict_pool,key=lambda x:(x["score"],x["wilson_lcb_95"],x["trades"])) if strict_pool else None
+    tier="STRICT" if selected is not None else None
+
+    # Coverage recovery is intentionally a calibration-only fallback. It avoids
+    # the pathological V0.12.1 outcome where XAU had zero holdout trades because
+    # no small calibration subgroup could clear a 95% confidence bound.
+    if selected is None:
+        recovery=[
+            row for row in rows
+            if float(row.get("expectancy_r",-999))>=0.05
+            and row.get("profit_factor") is not None
+            and float(row.get("profit_factor",0))>=1.05
+            and float(row.get("win_rate",0.0) or 0.0)>=max(CALIBRATION_RECOVERY_WR_MIN,break_even+0.03)
+            and float(row.get("wilson_lcb_95",0.0))>=CALIBRATION_RECOVERY_LCB_MIN
+        ]
+        recovery_target=[row for row in recovery if float(row.get("win_rate",0.0) or 0.0)>=target_win_rate]
+        recovery_pool=recovery_target if recovery_target else recovery
+        selected=max(
+            recovery_pool,
+            key=lambda x:(x["score"],x["win_rate"],x["trades"]),
+        ) if recovery_pool else None
+        tier="RECOVERY" if selected is not None else None
+
+    if selected is not None:
+        selected=dict(selected)
+        selected["confidence_tier"]=tier
+        selected["strict_confidence_met"]=bool(tier=="STRICT")
     return selected,rows
 
 
@@ -87,7 +124,7 @@ def _group_thresholds(frame,probability,rr,column,min_fraction=.06):
     work["_p"]=np.asarray(probability,dtype=float)
     thresholds={}
     detail={}
-    min_rows=max(60,int(len(work)*min_fraction))
+    min_rows=max(55,int(len(work)*min_fraction))
 
     for key,group in work.groupby(column,dropna=False):
         name=str(key)
@@ -95,7 +132,7 @@ def _group_thresholds(frame,probability,rr,column,min_fraction=.06):
         if len(group)>=min_rows and len(np.unique(group["label"]))>=2:
             selected,sweep=_select_threshold(
                 group["label"],group["_p"],rr=rr,
-                min_trades=max(10,int(len(group)*.035)),min_coverage=.03,
+                min_trades=max(9,int(len(group)*.03)),min_coverage=.025,
             )
             result["sweep_count"]=len(sweep)
             result["selection"]=selected
@@ -103,6 +140,7 @@ def _group_thresholds(frame,probability,rr,column,min_fraction=.06):
                 thresholds[name]=float(selected["threshold"])
                 result["eligible"]=True
                 result["selected_threshold"]=float(selected["threshold"])
+                result["confidence_tier"]=selected.get("confidence_tier")
         detail[name]=result
     return thresholds,detail
 
@@ -115,21 +153,28 @@ def learn_high_winrate_policy(frame,probability,rr=TARGET_RR):
 
     global_selected,global_sweep=_select_threshold(
         work["label"],probability,rr=rr,
-        min_trades=max(15,int(len(work)*.03)),min_coverage=.03,
+        min_trades=max(12,int(len(work)*.025)),min_coverage=.025,
     )
     regime_thresholds,regime_detail=_group_thresholds(work,probability,rr,"regime",.07)
     session_thresholds,session_detail=_group_thresholds(work,probability,rr,"session_name",.08)
-    joint_thresholds,joint_detail=_group_thresholds(work,probability,rr,"joint_context",.05)
+    joint_thresholds,joint_detail=_group_thresholds(work,probability,rr,"joint_context",.045)
 
     contextual=bool(regime_thresholds or session_thresholds or joint_thresholds)
     mode="CONTEXTUAL_HIGH_WINRATE" if contextual else "GLOBAL_HIGH_WINRATE" if global_selected else "NONE"
+    recovery_used=bool(
+        (global_selected or {}).get("confidence_tier")=="RECOVERY"
+        or any((item.get("selection") or {}).get("confidence_tier")=="RECOVERY" for item in regime_detail.values())
+        or any((item.get("selection") or {}).get("confidence_tier")=="RECOVERY" for item in session_detail.values())
+        or any((item.get("selection") or {}).get("confidence_tier")=="RECOVERY" for item in joint_detail.values())
+    )
     return {
         "mode":mode,
         "objective":"HIGH_WINRATE_RR_1_2",
         "rr":float(rr),
         "break_even_probability":break_even_probability(rr),
         "calibration_win_rate_target":CALIBRATION_WIN_RATE_TARGET,
-        "selection_statistic":"WILSON_LOWER_BOUND_95",
+        "selection_statistic":"WILSON_LOWER_BOUND_95_STRICT_FIRST_WITH_RECOVERY",
+        "recovery_used":recovery_used,
         "global_threshold":None if global_selected is None else float(global_selected["threshold"]),
         "global_selection":global_selected,
         "global_sweep_count":len(global_sweep),
@@ -260,10 +305,12 @@ def high_winrate_quality_gate(
     gate["status"]="PASSED" if gate["passed"] else "FAILED"
     gate["objective"]={
         "name":"HIGH_WINRATE_RR_1_2",
+        "version":"V0.12.2",
         "rr":2.0,
         "final_win_rate_target":FINAL_WIN_RATE_TARGET,
         "final_win_rate_wilson_lcb_min":FINAL_WILSON_LCB_MIN,
         "final_expectancy_target_r":FINAL_EXPECTANCY_TARGET,
         "final_profit_factor_target":FINAL_PF_TARGET,
+        "calibration_recovery_does_not_relax_final_gate":True,
     }
     return gate
