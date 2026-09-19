@@ -1,0 +1,1 @@
+Final Deep Forecast deployment marker after removing root Railway config. Expected: Dockerfile.cpu + db_persistent_compat_app, no startup probe.
