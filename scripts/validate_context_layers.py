@@ -1,3 +1,10 @@
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 import numpy as np
 import pandas as pd
 
@@ -73,7 +80,8 @@ def main():
                 "directional_bars": int(d["orderflow_direction"].ne(0).sum()),
             },
             "regimes": sorted(set(int(x) for x in pred)),
-        }
+        },
+        flush=True,
     )
 
 
