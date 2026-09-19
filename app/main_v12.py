@@ -12,12 +12,13 @@ from ml.auto_train_v123 import (
 from ml.features import FEATURE_COLUMNS
 
 
-VERSION="0.12.5"
-MODEL_VERSION="v0.12.5"
+VERSION="0.12.6"
+MODEL_VERSION="v0.12.6"
 FEATURE_SCHEMA="SMC_PA_ORDERFLOW_REGIME_V1"
 
-# V0.12.5 retains the deep-history SMC + PA + conditional Order Flow feature
-# schema, while adding development-only BUY/SELL walk-forward stability gating.
+# V0.12.6 keeps the deep-history SMC + PA + conditional Order Flow stack,
+# disables calibration recovery thresholds, and requires development-only
+# directional stability before a BUY/SELL side can contribute holdout trades.
 base.VERSION=VERSION
 base.trainer=TrainingManager(base.shadow,version=MODEL_VERSION)
 base.shadow.inference=LiveInference(threshold=.34,rr=2.0)
@@ -29,12 +30,12 @@ def model_available(symbol,version=MODEL_VERSION):
 
 base.model_available=model_available
 base.app.version=VERSION
-base.app.title="AI Market Intelligence Agent V0.12.5 Directional Stability"
+base.app.title="AI Market Intelligence Agent V0.12.6 Strict Precision RR 1:2"
 app=base.app
 
 
 @app.get("/api/training/summary")
-def v125_training_summary():
+def v126_training_summary():
     out={}
     for symbol in ("XAUUSD","BTCUSD"):
         state=base.trainer.status().get(symbol,{})
@@ -50,7 +51,8 @@ def v125_training_summary():
             "feature_schema":FEATURE_SCHEMA,
             "feature_count":len(FEATURE_COLUMNS),
             "orderflow_policy":"CONDITIONAL_PROXY_AWARE",
-            "context_policy":"CALIBRATION_SUBWINDOW_PLUS_DIRECTIONAL_WALK_FORWARD_STABILITY",
+            "context_policy":"STRICT_WILSON_ONLY_PLUS_SUBWINDOW_AND_DIRECTIONAL_STABILITY",
+            "calibration_recovery_allowed":False,
             "dataset_rows":state.get("dataset_rows"),
             "history":metrics.get("history") or state.get("history"),
             "required_history":(
@@ -87,6 +89,8 @@ def v125_training_summary():
                     "directional_gate_passed":(side_models.get(side) or {}).get("directional_gate_passed"),
                     "directional_stability":(side_models.get(side) or {}).get("directional_stability") or directional.get(side),
                     "recovery_used":((side_models.get(side) or {}).get("threshold_policy") or {}).get("recovery_used"),
+                    "recovery_allowed":((side_models.get(side) or {}).get("threshold_policy") or {}).get("recovery_allowed"),
+                    "strict_precision_requirements":((side_models.get(side) or {}).get("threshold_policy") or {}).get("strict_precision_requirements"),
                     "hybrid_mode":((side_models.get(side) or {}).get("hybrid_gate") or {}).get("mode"),
                     "meta_mode":((side_models.get(side) or {}).get("meta_precision") or {}).get("mode"),
                     "test_selected_rows":(side_models.get(side) or {}).get("test_selected_rows"),
@@ -99,12 +103,10 @@ def v125_training_summary():
 
 
 @app.middleware("http")
-async def v125_runtime_labels(request,call_next):
+async def v126_runtime_labels(request,call_next):
     response=await call_next(request)
     content_type=response.headers.get("content-type","")
 
-    # Legacy base endpoint contains an old literal model version. Correct the
-    # presentation layer without changing the underlying research state.
     if request.url.path=="/api/live/status" and "application/json" in content_type:
         body=b""
         async for chunk in response.body_iterator:
@@ -127,31 +129,23 @@ async def v125_runtime_labels(request,call_next):
     async for chunk in response.body_iterator:
         body+=chunk
     text=body.decode("utf-8",errors="replace")
-    for old in ("V0.11.4","V0.12.0","V0.12.1","V0.12.2","V0.12.3","V0.12.4"):
-        text=text.replace(old,"V0.12.5")
+    for old in ("V0.11.4","V0.12.0","V0.12.1","V0.12.2","V0.12.3","V0.12.4","V0.12.5"):
+        text=text.replace(old,"V0.12.6")
     text=text.replace(
         "Hybrid BUY/SELL: LightGBM + XGBoost + Linear Regression + Offline Q-Learning.",
-        "RR 1:2 deep-history ML + SMC + Price Action + conditional Order Flow + Directional Stability."
+        "RR 1:2 strict precision: ML + SMC + Price Action + conditional Order Flow + Directional Stability."
     )
     text=text.replace(
         "90-day Coinbase training with linear expected-R and offline reinforcement-learning confirmation.",
-        "180-day Coinbase training with causal SMC, Price Action, proxy-aware Order Flow and development-only BUY/SELL stability gating."
+        "180-day Coinbase training with strict Wilson calibration, causal SMC, Price Action and development-only BUY/SELL stability gating."
     )
     text=text.replace(
         "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow and stable-context validation.",
-        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow, stable context and directional walk-forward validation."
+        "180-day Coinbase deep-history training with strict precision contexts and directional walk-forward validation."
     )
     text=text.replace(
-        "180-day Coinbase deep-history training with causal SMC, Price Action, proxy-aware Order Flow, four-fold temporal diagnostics and stable-context validation.",
-        "180-day Coinbase deep-history training with four-fold temporal diagnostics and independent BUY/SELL stability gating."
-    )
-    text=text.replace(
-        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Stable Context + Meta Precision.",
-        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Directional Stability + Meta Precision."
-    )
-    text=text.replace(
-        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Stable Context + Adaptive Coverage.",
-        "Deep-history RR 1:2: SMC + Price Action + conditional Order Flow + Directional Stability + Adaptive Coverage."
+        "180-day Coinbase deep-history training with four-fold temporal diagnostics and independent BUY/SELL stability gating.",
+        "180-day Coinbase deep-history training with strict calibration precision and four-fold BUY/SELL stability gating."
     )
     headers=dict(response.headers)
     headers.pop("content-length",None)
