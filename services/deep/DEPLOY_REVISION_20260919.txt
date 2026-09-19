@@ -1,0 +1,1 @@
+Deep Forecast production cleanup revision: CPU-only runtime, PostgreSQL-persistent PatchTST/TFT, no startup probe.
