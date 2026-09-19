@@ -38,7 +38,9 @@ def wilson_lower_bound(wins,trades,z=1.96):
 class MetaPrecisionClassifier:
     """Small stacking model that learns when base models agree on high-quality trades."""
 
-    def __init__(self,c=0.60):
+    def __init__(self,c=0.45):
+        # Slightly stronger regularization than V0.12.1. The meta model is a
+        # veto layer, so stability matters more than fitting the calibration set.
         self.model=Pipeline([
             ("impute",SimpleImputer(strategy="median")),
             ("scale",StandardScaler()),
@@ -47,8 +49,8 @@ class MetaPrecisionClassifier:
 
     def fit(self,x,y):
         y=np.asarray(y,dtype=int)
-        if len(y)<40 or len(np.unique(y))<2:
-            raise ValueError("meta precision fit needs >=40 rows and both classes")
+        if len(y)<60 or len(np.unique(y))<2:
+            raise ValueError("meta precision fit needs >=60 rows and both classes")
         self.model.fit(np.asarray(x,dtype=float),y)
         return self
 
@@ -76,11 +78,11 @@ def _candidate_thresholds(p):
     p=p[np.isfinite(p)]
     if not len(p):
         return []
-    qs=np.quantile(p,[.35,.45,.55,.65,.72,.78,.84,.89,.93,.96,.98,.99])
-    floor=max(.40,min(.70,float(np.quantile(p,.30))))
-    upper=min(.97,max(float(np.max(p)),floor))
+    qs=np.quantile(p,[.30,.40,.50,.60,.68,.75,.80,.85,.89,.92,.95,.97,.99])
+    floor=max(.38,min(.65,float(np.quantile(p,.25))))
+    upper=min(.95,max(float(np.max(p)),floor))
     grid=np.arange(floor,upper+1e-9,.005)
-    return sorted({round(float(v),4) for v in np.r_[qs,grid] if np.isfinite(v) and floor<=v<=.97})
+    return sorted({round(float(v),4) for v in np.r_[qs,grid] if np.isfinite(v) and floor<=v<=.95})
 
 
 def select_meta_policy(
@@ -89,9 +91,15 @@ def select_meta_policy(
     base_mask,
     rr=2.0,
     target_win_rate=.45,
-    min_trades=12,
-    min_coverage=.02,
+    min_trades=20,
+    min_coverage=.04,
 ):
+    """Choose a conservative meta veto.
+
+    V0.12.1 could accept a spectacular-looking 10-trade calibration pocket and
+    then collapse on holdout. V0.12.2 requires a materially larger policy sample
+    and a confidence improvement over the base gate before the veto can activate.
+    """
     y=np.asarray(y,dtype=int)
     p=np.asarray(meta_probability,dtype=float)
     base=np.asarray(base_mask,dtype=bool)
@@ -102,14 +110,20 @@ def select_meta_policy(
         if np.any(base) else {"trades":0}
     )
     base_trades=int(base_metrics.get("trades",0) or 0)
-    base_wins=int(round(float(base_metrics.get("win_rate",0.0) or 0.0)*base_trades))
+    base_wr=float(base_metrics.get("win_rate",0.0) or 0.0)
+    base_wins=int(round(base_wr*base_trades))
     base_lcb=wilson_lower_bound(base_wins,base_trades)
+
+    # Never let a small calibration slice create an aggressive veto. The floor
+    # scales with policy rows while remaining practical for XAU's smaller sample.
+    sample_floor=max(int(min_trades),min(30,max(16,int(len(y)*.08))))
+    coverage_floor=max(float(min_coverage),0.04)
 
     for threshold in _candidate_thresholds(p):
         mask=base & (p>=float(threshold))
         trades=int(mask.sum())
         coverage=float(trades/len(y)) if len(y) else 0.0
-        if trades<int(min_trades) or coverage<float(min_coverage):
+        if trades<sample_floor or coverage<coverage_floor:
             continue
         metrics=trading_metrics(y[mask],p[mask],threshold=-1e9,rr=rr)
         wr=float(metrics.get("win_rate",0.0) or 0.0)
@@ -119,13 +133,15 @@ def select_meta_policy(
         pf=metrics.get("profit_factor")
         pfv=float(pf) if pf is not None and np.isfinite(pf) else 0.0
         dd=abs(float(metrics.get("max_drawdown_r",0.0) or 0.0))
-        target_bonus=max(0.0,wr-float(target_win_rate))*8.0
+        target_bonus=max(0.0,wr-float(target_win_rate))*6.0
+        confidence_gain=lcb-base_lcb
         score=(
             4.0*lcb
             +2.0*wr
+            +2.0*max(confidence_gain,0.0)
             +target_bonus
             +0.8*expectancy
-            +0.08*pfv
+            +0.06*pfv
             +0.05*math.sqrt(trades)
             -0.015*dd
         )
@@ -133,29 +149,35 @@ def select_meta_policy(
             "threshold":float(threshold),
             "coverage":coverage,
             "wilson_lcb_95":lcb,
+            "confidence_gain_vs_base":float(confidence_gain),
             "score":float(score),
             "target_met":bool(wr>=target_win_rate),
             **metrics,
         })
 
+    break_even=1.0/(1.0+float(rr))
     viable=[
         row for row in rows
-        if float(row.get("expectancy_r",-999))>=0.15
+        if float(row.get("expectancy_r",-999))>=0.12
         and row.get("profit_factor") is not None
-        and float(row.get("profit_factor",0))>=1.20
-        and float(row.get("wilson_lcb_95",0.0))>=(1.0/(1.0+float(rr)))
+        and float(row.get("profit_factor",0))>=1.15
+        and float(row.get("win_rate",0.0) or 0.0)>=max(break_even+0.03,0.38)
     ]
     target=[row for row in viable if bool(row.get("target_met"))]
     pool=target if target else viable
     selected=max(pool,key=lambda r:(r["score"],r["wilson_lcb_95"],r["trades"])) if pool else None
 
-    # Meta filter is a veto only when it improves statistical confidence or
-    # reaches the precision target. Otherwise keep the already-learned base gate.
+    # Veto only when there is enough calibration support AND it improves
+    # confidence/precision over the base gate. Otherwise BYPASS is safer.
     use_meta=bool(
         selected
+        and int(selected.get("trades",0) or 0)>=sample_floor
         and (
-            selected.get("target_met")
-            or float(selected.get("wilson_lcb_95",0.0))>base_lcb+0.01
+            float(selected.get("wilson_lcb_95",0.0))>=base_lcb+0.03
+            or (
+                bool(selected.get("target_met"))
+                and float(selected.get("win_rate",0.0) or 0.0)>=base_wr+0.05
+            )
         )
     )
     return {
@@ -170,5 +192,7 @@ def select_meta_policy(
             "wilson_lcb_95":base_lcb,
         },
         "target_win_rate":float(target_win_rate),
+        "minimum_policy_trades":int(sample_floor),
+        "minimum_policy_coverage":float(coverage_floor),
         "candidate_count":int(len(rows)),
     }
