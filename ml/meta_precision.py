@@ -10,6 +10,16 @@ from ml.performance import trading_metrics
 
 META_ROW_FEATURE_CANDIDATES=(
     "smc_confluence",
+    "price_action_confluence",
+    "orderflow_confluence",
+    "context_confluence",
+    "pa_strength",
+    "pa_trend_efficiency",
+    "pa_momentum_3_atr",
+    "orderflow_strength",
+    "orderflow_source_quality",
+    "of_delta_ratio",
+    "of_cvd_20",
     "htf_alignment",
     "stop_distance_atr",
     "volatility_z",
@@ -39,8 +49,8 @@ class MetaPrecisionClassifier:
     """Small stacking model that learns when base models agree on high-quality trades."""
 
     def __init__(self,c=0.45):
-        # Slightly stronger regularization than V0.12.1. The meta model is a
-        # veto layer, so stability matters more than fitting the calibration set.
+        # The meta model is a veto layer. Stronger regularization and a larger
+        # deep-history sample are preferred over fitting a small calibration pocket.
         self.model=Pipeline([
             ("impute",SimpleImputer(strategy="median")),
             ("scale",StandardScaler()),
@@ -96,9 +106,8 @@ def select_meta_policy(
 ):
     """Choose a conservative meta veto.
 
-    V0.12.1 could accept a spectacular-looking 10-trade calibration pocket and
-    then collapse on holdout. V0.12.2 requires a materially larger policy sample
-    and a confidence improvement over the base gate before the veto can activate.
+    The veto is allowed only when the calibration support is material and it
+    improves statistical confidence or precision over the already-learned base gate.
     """
     y=np.asarray(y,dtype=int)
     p=np.asarray(meta_probability,dtype=float)
@@ -114,8 +123,6 @@ def select_meta_policy(
     base_wins=int(round(base_wr*base_trades))
     base_lcb=wilson_lower_bound(base_wins,base_trades)
 
-    # Never let a small calibration slice create an aggressive veto. The floor
-    # scales with policy rows while remaining practical for XAU's smaller sample.
     sample_floor=max(int(min_trades),min(30,max(16,int(len(y)*.08))))
     coverage_floor=max(float(min_coverage),0.04)
 
@@ -167,8 +174,6 @@ def select_meta_policy(
     pool=target if target else viable
     selected=max(pool,key=lambda r:(r["score"],r["wilson_lcb_95"],r["trades"])) if pool else None
 
-    # Veto only when there is enough calibration support AND it improves
-    # confidence/precision over the base gate. Otherwise BYPASS is safer.
     use_meta=bool(
         selected
         and int(selected.get("trades",0) or 0)>=sample_floor
